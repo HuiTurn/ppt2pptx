@@ -12,6 +12,7 @@ RT_DOCUMENT = 1000
 RT_SLIDE = 1006
 RT_SLIDE_LIST_WITH_TEXT = 4080
 RT_SLIDE_PERSIST_ATOM = 1011
+RT_SLIDE_SHOW_SLIDE_INFO_ATOM = 0x03F9
 RT_PERSIST_DIRECTORY_ATOM = 6002
 RT_TEXT_CHARS_ATOM = 4000
 RT_TEXT_BYTES_ATOM = 4008
@@ -125,6 +126,7 @@ class Slide:
     header_footer: HeaderFooter | None = None
     background_color_end: str | None = None
     notes: tuple[str, ...] = ()
+    hidden: bool = False
 
 @dataclass(frozen=True, slots=True)
 class CoreProperties:
@@ -775,6 +777,10 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
             shapes.append(BasicShape(shape.preset, left, top, right - left, bottom - top,
                                      shape.fill_color, shape.line_color, shape.rotation,
                                      shape.flip_horizontal, shape.flip_vertical))
+    slide_show_info = next((child for child in descendants(slide_record)
+                            if child.type == RT_SLIDE_SHOW_SLIDE_INFO_ATOM
+                            and len(child.payload) >= 12), None)
+    hidden = bool(struct.unpack_from("<H", slide_show_info.payload, 10)[0] & 0x0004) if slide_show_info else False
     return Slide(
         text_boxes=tuple(boxes),
         pictures=tuple(_shape_pictures(slide_record, image_map)),
@@ -784,6 +790,7 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
         header_footer=_header_footer(slide_record, header_footer, instance=0),
         background_color_end=background_end,
         notes=notes,
+        hidden=hidden,
     )
 
 def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | None = None) -> Presentation:

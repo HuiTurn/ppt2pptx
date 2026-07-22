@@ -14,6 +14,7 @@ faithful.
 
 - Opens RC4 CryptoAPI password-protected presentations when a password is supplied.
 - Preserves normal slide order and dimensions without mistaking masters or notes for slides.
+- Preserves hidden-slide state so excluded slides remain hidden during slide shows.
 - Restores positioned editable text, fonts, sizes, colors, bold/italic/underline,
   paragraph alignment, bullets, rotation, flips, and safe external hyperlinks.
 - Preserves PNG, JPEG, GIF, TIFF, EMF, WMF, and PICT media, including cropping,

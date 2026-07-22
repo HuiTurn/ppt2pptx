@@ -85,7 +85,7 @@ def _header_footer_shapes(value: HeaderFooter | None, slide_width: int, slide_he
                                    slide_height - 336, 576, 240, str(slide_number), "r", "slidenum"))
     return result
 
-def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int) -> str:
+def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, hidden: bool) -> str:
     drawing_shapes = []
     for index, shape in enumerate(basic_shapes, 2):
         fill = f'<a:solidFill><a:srgbClr val="{shape.fill_color}"/></a:solidFill>' if shape.fill_color else '<a:noFill/>'
@@ -106,7 +106,8 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
         background = f'<p:bg><p:bgPr><a:gradFill rotWithShape="0"><a:gsLst><a:gs pos="0"><a:srgbClr val="{background_color}"/></a:gs><a:gs pos="100000"><a:srgbClr val="{background_color_end}"/></a:gs></a:gsLst><a:lin ang="0" scaled="1"/></a:gradFill><a:effectLst/></p:bgPr></p:bg>'
     else:
         background = f'<p:bg><p:bgPr><a:solidFill><a:srgbClr val="{background_color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>' if background_color else ''
-    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld>' + background + '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' + ''.join(drawing_shapes) + ''.join(text_shapes) + ''.join(footer_shapes) + ''.join(picture_shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
+    show = ' show="0"' if hidden else ''
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"' + show + '><p:cSld>' + background + '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' + ''.join(drawing_shapes) + ''.join(text_shapes) + ''.join(footer_shapes) + ''.join(picture_shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
 
 def _notes_slide(values: tuple[str, ...]) -> str:
     text = "\r".join(values)
@@ -169,7 +170,8 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
             rels, ids = [], []
             image_index = 1
             for i in range(1, len(slides)+1):
-                rels.append(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{i}.xml"/>'); ids.append(f'<p:sldId id="{255+i}" r:id="rId{i}"/>')
+                rels.append(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{i}.xml"/>')
+                ids.append(f'<p:sldId id="{255+i}" r:id="rId{i}"/>')
                 picture_refs: list[tuple[Picture, str]] = []
                 picture_rels: list[str] = []
                 next_relation = 2
@@ -204,7 +206,7 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
                     picture_rels.append(f'<Relationship Id="{notes_relation}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide{i}.xml"/>')
                     archive.writestr(f'ppt/notesSlides/notesSlide{i}.xml', _notes_slide(slides[i-1].notes))
                     archive.writestr(f'ppt/notesSlides/_rels/notesSlide{i}.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide' + str(i) + '.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="../notesMasters/notesMaster1.xml"/></Relationships>')
-                archive.writestr(f'ppt/slides/slide{i}.xml', _slide(slides[i-1].text_boxes, picture_refs, slides[i-1].shapes, slides[i-1].background_color, slides[i-1].background_color_end, hyperlink_ids, slides[i-1].header_footer, presentation.width, presentation.height, i))
+                archive.writestr(f'ppt/slides/slide{i}.xml', _slide(slides[i-1].text_boxes, picture_refs, slides[i-1].shapes, slides[i-1].background_color, slides[i-1].background_color_end, hyperlink_ids, slides[i-1].header_footer, presentation.width, presentation.height, i, slides[i-1].hidden))
                 archive.writestr(f'ppt/slides/_rels/slide{i}.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>' + ''.join(picture_rels) + '</Relationships>')
             master_rid = len(slides) + 1
             rels.append(f'<Relationship Id="rId{master_rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>')

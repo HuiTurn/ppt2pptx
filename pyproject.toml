@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ppt2pptx"
-version = "0.3.0"
+version = "0.3.1"
 description = "A pure-Python converter from legacy PowerPoint .ppt files to .pptx"
 readme = "README.md"
 requires-python = ">=3.11"

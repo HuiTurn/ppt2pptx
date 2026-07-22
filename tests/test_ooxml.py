@@ -58,3 +58,14 @@ class OoxmlTests(unittest.TestCase):
         self.assertIn("ppt/comments/comment1.xml", names)
         self.assertIn("ppt/notesSlides/notesSlide1.xml", names)
         self.assertIn("ppt/notesMasters/notesMaster1.xml", names)
+
+    def test_marks_hidden_slides_in_presentation(self):
+        presentation = Presentation(5760, 4320, (Slide(()), Slide((), hidden=True)))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hidden.pptx"
+            write_pptx(path, presentation)
+            with zipfile.ZipFile(path) as archive:
+                visible = ElementTree.fromstring(archive.read("ppt/slides/slide1.xml"))
+                hidden = ElementTree.fromstring(archive.read("ppt/slides/slide2.xml"))
+        self.assertNotIn("show", visible.attrib)
+        self.assertEqual(hidden.attrib["show"], "0")
