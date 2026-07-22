@@ -26,7 +26,7 @@ faithful.
 ## Usage
 
 ```console
-python -m pip install -e .
+python -m pip install ppt2pptx
 ppt2pptx presentation.ppt
 ppt2pptx presentation.ppt -o presentation.pptx --report report.json
 ppt2pptx protected.ppt --password-file password.txt
@@ -58,6 +58,7 @@ format and are deliberately rejected with a clear error.
 ## Development
 
 ```console
+python -m pip install -e .
 PYTHONPATH=src python -m unittest discover -s tests -v
 python -m build
 ```
