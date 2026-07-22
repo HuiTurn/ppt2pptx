@@ -93,6 +93,7 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                 ],
                 "background_color": slide.background_color,
                 "background_color_end": slide.background_color_end,
+                "hidden": slide.hidden,
                 "notes": list(slide.notes),
                 "header_footer": ({
                     "date_text": slide.header_footer.date_text,

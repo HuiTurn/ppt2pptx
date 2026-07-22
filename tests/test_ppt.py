@@ -91,6 +91,18 @@ class PptParserTests(unittest.TestCase):
         self.assertEqual(len(presentation.slides), 1)
         self.assertEqual(presentation.slides[0].notes, ("Speaker note",))
 
+    def test_preserves_hidden_slide_flag(self):
+        slide_ref = rec(1011, struct.pack("<5I", 2, 0, 0, 0, 0), 0)
+        document = rec(1000, rec(4080, slide_ref, instance=0))
+        directory_size = len(rec(6002, struct.pack("<2I", (1 << 20) | 2, 0), 0))
+        slide_offset = len(document) + directory_size
+        directory = rec(6002, struct.pack("<2I", (1 << 20) | 2, slide_offset), 0)
+        slide_show_info = bytearray(16)
+        struct.pack_into("<H", slide_show_info, 10, 0x0004)
+        slide = rec(1006, rec(0x03F9, bytes(slide_show_info), 0))
+        presentation = extract_presentation(document + directory + slide)
+        self.assertTrue(presentation.slides[0].hidden)
+
     def test_recovers_filled_table_cells_as_editable_shapes(self):
         slide_ref = rec(1011, struct.pack("<5I", 2, 0, 0, 0, 0), 0)
         document = rec(1000, rec(4080, slide_ref, instance=0))
