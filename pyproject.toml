@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "msppt2pptx"
+name = "ppt2pptx"
 version = "0.3.0"
 description = "A pure-Python converter from legacy PowerPoint .ppt files to .pptx"
 readme = "README.md"
