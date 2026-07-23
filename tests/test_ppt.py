@@ -1,9 +1,14 @@
 import struct
 import unittest
 from ppt2pptx.ppt import (
-    SHAPE_PRESETS, TextRun, _GroupSpace, _MasterStyle, _anchor, _fopt_complex_properties,
-    _fopt_properties, _freeform_path, _skip_paragraph_properties, _style_text,
-    extract_presentation, extract_slides, records,
+    SHAPE_PRESETS, TextContent, TextRun, _GroupSpace, _MasterStyle, _anchor, _fopt_complex_properties,
+    _fopt_properties, _freeform_path, _line_dash, _line_end,
+    _parse_text_ruler, _shape_style,
+    _parse_text_ruler_details,
+    _minimum_unwrapped_width, _minimum_wrapped_height, _parse_slide,
+    _skip_paragraph_properties, _style_text,
+    _legacy_arc_path, _text, _uses_custom_geometry, extract_presentation,
+    extract_slides, records,
 )
 
 def rec(kind, payload=b"", version=0xF, instance=0): return struct.pack("<HHI", (instance << 4) | version, kind, len(payload)) + payload
@@ -11,6 +16,56 @@ def rec(kind, payload=b"", version=0xF, instance=0): return struct.pack("<HHI", 
 class PptParserTests(unittest.TestCase):
     def test_uses_valid_ooxml_name_for_legacy_arrow(self):
         self.assertEqual(SHAPE_PRESETS[13], "rightArrow")
+        self.assertEqual(SHAPE_PRESETS[34], "bentConnector3")
+        self.assertEqual(SHAPE_PRESETS[88], "rightBrace")
+        self.assertEqual(_line_dash({462: 2}), "sysDot")
+        self.assertEqual(_line_dash({462: 7}), "lgDash")
+        self.assertEqual(
+            _line_end({465: 1, 468: 2, 469: 0}, 465, 468, 469),
+            ("triangle", "lg", "sm"),
+        )
+        self.assertEqual(
+            _shape_style({384: 1, 385: 0, 387: 0x0000FFFF}, ()),
+            ("000000", None, None, "dkUpDiag", "FFFF00"),
+        )
+        self.assertGreater(
+            _minimum_unwrapped_width(
+                TextContent("A much wider line", (TextRun("A much wider line", font_size=20),))
+            ),
+            500,
+        )
+        self.assertGreater(
+            _minimum_wrapped_height(
+                TextContent("A long line that wraps", (
+                    TextRun("A long line that wraps", font_size=20),
+                )),
+                500, None, None, None, None,
+            ),
+            400,
+        )
+        self.assertLess(
+            _minimum_wrapped_height(
+                TextContent("Five\rshort\rlines\rfit\rnormally", (
+                    TextRun("Five\rshort\rlines\rfit\rnormally", font_size=20),
+                )),
+                1566, 90488, 90488, 45720, 45720,
+            ),
+            1200,
+        )
+        self.assertFalse(_uses_custom_geometry(19, {325: b"vertices"}))
+        self.assertTrue(
+            _uses_custom_geometry(19, {325: b"vertices", 326: b"segments"})
+        )
+        arc_vertices = struct.pack(
+            "<3H8h", 4, 4, 4,
+            0, 0, 21600, 21600, 0, 21600, 21600, 0,
+        )
+        self.assertEqual(
+            _legacy_arc_path({325: arc_vertices})[0][-1],
+            ("C", (0, 9669), (9669, 0), (21600, 0)),
+        )
+        symbol = next(records(rec(4000, "\uf044 \uf0de \uf0bb".encode("utf-16le"), 0)))
+        self.assertEqual(_text(symbol), "Δ ⇒ ≈")
 
     def test_stops_safely_on_truncated_paragraph_properties(self):
         self.assertEqual(
@@ -40,6 +95,34 @@ class PptParserTests(unittest.TestCase):
         self.assertEqual((content.runs[1].color, content.runs[1].typeface),
                          ("FFFFFF", "Arial"))
 
+    def test_preserves_paragraph_layout_baseline_and_text_ruler(self):
+        text = "Tc"
+        paragraph_mask = 0x100 | 0x400 | 0x1000 | 0x2000 | 0x4000
+        paragraph = (
+            struct.pack("<IhI", len(text) + 1, 0, paragraph_mask)
+            + struct.pack("<5h", 90, -20, 10, 100, 20)
+        )
+        characters = (
+            struct.pack("<II", 1, 0)
+            + struct.pack("<IIh", 1, 0x80000, -25)
+        )
+        content = _style_text(text, paragraph + characters, (), (), (), 4)
+
+        self.assertEqual(content.runs[1].baseline, -25)
+        self.assertEqual(content.paragraph_left_margins, (100,))
+        self.assertEqual(content.paragraph_indents, (20,))
+        self.assertEqual(content.paragraph_line_spacings, (90,))
+        self.assertEqual(content.paragraph_space_before, (-20,))
+        self.assertEqual(content.paragraph_space_after, (10,))
+        self.assertEqual(_parse_text_ruler(struct.pack("<Ih", 0x8, 39))[0],
+                         (39, None))
+        levels, default_tab, tabs = _parse_text_ruler_details(
+            bytes.fromhex("050000006c0001001c020000")
+        )
+        self.assertEqual(levels[0], (None, None))
+        self.assertEqual(default_tab, 108)
+        self.assertEqual(tabs, ((540, "l"),))
+
     def test_extracts_text_from_direct_slide_record(self):
         text = rec(4000, "Hello\rWorld".encode("utf-16le"), 0)
         slide = rec(1006, text)
@@ -67,7 +150,12 @@ class PptParserTests(unittest.TestCase):
         bse = rec(0xF007, bytes(bse_payload), 2, 6)
         persist_atom = rec(1011, struct.pack("<5I", 2, 0, 0, 0, 0), 0)
         document = rec(1000, bse + rec(4080, persist_atom))
-        fopt = rec(0xF00B, struct.pack("<HI", 0x4104, 1), 3, 1)
+        fopt = rec(
+            0xF00B,
+            struct.pack("<HIHI", 0x4104, 1, 263, 0x000000FF),
+            3,
+            2,
+        )
         anchor = rec(0xF010, struct.pack("<4h", 576, 288, 1728, 1152), 0)
         slide = rec(1006, rec(0xF004, fopt + anchor))
         offset = len(document) + 20
@@ -78,6 +166,27 @@ class PptParserTests(unittest.TestCase):
         picture = presentation.slides[0].pictures[0]
         self.assertEqual(picture.data, png)
         self.assertEqual((picture.left, picture.top, picture.width, picture.height), (288, 576, 1440, 576))
+        self.assertEqual(picture.transparent_color, "FF0000")
+
+    def test_places_master_picture_behind_slide_picture(self):
+        def picture_shape(reference):
+            fopt = rec(0xF00B, struct.pack("<HI", 0x4104, reference), 3, 1)
+            anchor = rec(0xF010, struct.pack("<4h", 100, 100, 500, 500), 0)
+            return rec(0xF004, fopt + anchor)
+
+        master = next(records(rec(1016, picture_shape(1))))
+        slide = next(records(rec(1006, picture_shape(2))))
+        image_map = {
+            1: (b"master", "png", "image/png"),
+            2: (b"slide", "png", "image/png"),
+        }
+
+        parsed = _parse_slide(
+            slide, image_map, [], (), {}, {}, None, (), master, (), 5760, 4320
+        )
+
+        self.assertEqual([picture.data for picture in parsed.pictures],
+                         [b"master", b"slide"])
 
     def test_resolves_legacy_external_slide_text(self):
         persist_atom = rec(1011, struct.pack("<5I", 2, 0, 0, 0, 0), 0)

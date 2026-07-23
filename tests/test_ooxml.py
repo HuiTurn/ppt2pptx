@@ -4,10 +4,19 @@ import unittest
 from xml.etree import ElementTree
 import zipfile
 
-from ppt2pptx.ooxml import write_pptx
-from ppt2pptx.ppt import Comment, CoreProperties, HeaderFooter, Presentation, Slide, TextBox, TextRun
+from ppt2pptx.ooxml import _xfrm_box, write_pptx
+from ppt2pptx.ppt import (
+    BasicShape, Comment, CoreProperties, HeaderFooter, Picture, Presentation,
+    Slide, TextBox, TextRun,
+)
 
 class OoxmlTests(unittest.TestCase):
+    def test_swaps_quarter_turn_shape_extents_around_the_same_center(self):
+        self.assertEqual(
+            _xfrm_box(96, 1584, 5472, 240, 5400000),
+            (2712, -1032, 240, 5472),
+        )
+
     def test_writes_positioned_text_and_complete_layout_relationships(self):
         presentation = Presentation(5760, 4320, (Slide((TextBox("Hello", 288, 576, 1152, 288),)),))
         with tempfile.TemporaryDirectory() as directory:
@@ -99,3 +108,94 @@ class OoxmlTests(unittest.TestCase):
                 xml = archive.read("ppt/slides/slide1.xml").decode()
         self.assertIn('<a:prstGeom prst="ellipse">', xml)
         self.assertIn('<a:bodyPr wrap="none"><a:spAutoFit/></a:bodyPr>', xml)
+
+    def test_normalizes_leading_tabs_for_centered_and_left_text(self):
+        boxes = (
+            TextBox(
+                "\tCentered", 0, 0, 1000, 300,
+                paragraph_alignments=("ctr",),
+                tab_stops=((120, "l"),),
+            ),
+            TextBox(
+                "\tIndented", 0, 400, 1000, 300,
+                paragraph_alignments=("l",),
+                paragraph_left_margins=(0,),
+                paragraph_indents=(0,),
+                tab_stops=((120, "l"),),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tabs.pptx"
+            write_pptx(path, Presentation(5760, 4320, (Slide(boxes),)))
+            with zipfile.ZipFile(path) as archive:
+                xml = archive.read("ppt/slides/slide1.xml").decode()
+        self.assertNotIn(">\\tCentered<", xml)
+        self.assertNotIn(">\\tIndented<", xml)
+        self.assertIn('algn="l" marL="190500" indent="0"', xml)
+
+    def test_writes_detailed_text_line_and_picture_properties(self):
+        box = TextBox(
+            "Tc",
+            100,
+            100,
+            1000,
+            400,
+            runs=(TextRun("T"), TextRun("c", baseline=-25)),
+            paragraph_bullets=(True,),
+            paragraph_left_margins=(39,),
+            paragraph_indents=(0,),
+            paragraph_line_spacings=(90,),
+            paragraph_space_before=(-20,),
+            paragraph_space_after=(10,),
+            inset_left=0,
+            inset_top=0,
+            inset_right=0,
+            inset_bottom=0,
+            line_color="112233",
+            line_width=38100,
+            default_tab_size=108,
+            tab_stops=((540, "l"),),
+        )
+        picture = Picture(
+            b"image",
+            "png",
+            "image/png",
+            100,
+            500,
+            1000,
+            1000,
+            transparent_color="FF0000",
+        )
+        shape = BasicShape(
+            "line", 50, 50, 500, 1, fill_color="000000",
+            line_color="000000", line_width=12700,
+            fill_pattern="dkUpDiag", fill_back_color="FFFF00",
+            line_head=("stealth", None, None),
+            line_tail=("triangle", "lg", "sm"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "details.pptx"
+            write_pptx(
+                path,
+                Presentation(5760, 4320, (Slide((box,), (picture,), (shape,)),)),
+            )
+            with zipfile.ZipFile(path) as archive:
+                xml = archive.read("ppt/slides/slide1.xml").decode()
+        self.assertIn('baseline="-25000"', xml)
+        self.assertIn('marL="61912" indent="-61912"', xml)
+        self.assertIn('<a:lnSpc><a:spcPct val="90000"/></a:lnSpc>', xml)
+        self.assertIn('<a:spcBef><a:spcPts val="250"/></a:spcBef>', xml)
+        self.assertIn('<a:spcAft><a:spcPct val="10000"/></a:spcAft>', xml)
+        self.assertIn('lIns="0" tIns="0" rIns="0" bIns="0"', xml)
+        self.assertIn('<a:ln w="38100">', xml)
+        self.assertIn('<a:ln w="12700">', xml)
+        self.assertIn('<a:headEnd type="stealth"/>', xml)
+        self.assertIn('<a:tailEnd type="triangle" w="lg" len="sm"/>', xml)
+        self.assertIn('<a:pattFill prst="dkUpDiag">', xml)
+        self.assertIn('<a:bgClr><a:srgbClr val="FFFF00"/></a:bgClr>', xml)
+        self.assertIn('defTabSz="171450"', xml)
+        self.assertIn('<a:tab pos="857250" algn="l"/>', xml)
+        self.assertIn('<a:clrFrom><a:srgbClr val="FF0000"/></a:clrFrom>', xml)
+        self.assertIn('<a:alpha val="0"/>', xml)
+        self.assertLess(xml.index("<p:pic>"), xml.index("<p:sp>"))
+        self.assertLess(xml.index("<p:pic>"), xml.index("<p:txBody>"))

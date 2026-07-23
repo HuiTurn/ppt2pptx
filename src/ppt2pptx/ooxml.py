@@ -28,21 +28,81 @@ def _paragraphs(box: TextBox, hyperlink_ids: dict[str, str]) -> str:
                 paragraphs[-1].append((piece, run))
     result: list[str] = []
     for index, fragments in enumerate(paragraphs):
+        fragments = list(fragments)
         alignment = box.paragraph_alignments[index] if index < len(box.paragraph_alignments) else None
         bullet = box.paragraph_bullets[index] if index < len(box.paragraph_bullets) else False
         level = box.paragraph_levels[index] if index < len(box.paragraph_levels) else 0
+        leading_tabs = 0
+        for fragment_index, (value, style) in enumerate(fragments):
+            count = len(value) - len(value.lstrip("\t"))
+            leading_tabs += count
+            if count:
+                fragments[fragment_index] = (value[count:], style)
+            if fragments[fragment_index][0]:
+                break
         attributes = f' algn="{alignment}"' if alignment else ""
         if level:
             attributes += f' lvl="{level}"'
+        if box.default_tab_size is not None and box.default_tab_size > 0:
+            attributes += f' defTabSz="{_emu(box.default_tab_size)}"'
+        left_margin = (
+            box.paragraph_left_margins[index]
+            if index < len(box.paragraph_left_margins) else None
+        )
+        indent = (
+            box.paragraph_indents[index]
+            if index < len(box.paragraph_indents) else None
+        )
+        # LibreOffice applies leading tabs after paragraph centering/autofit,
+        # which shifts or wraps lines that legacy PowerPoint kept aligned.
+        # Express a leading tab as a paragraph margin for left-aligned text;
+        # centered text already has the intended placement.
+        if (
+            leading_tabs
+            and alignment != "ctr"
+            and box.tab_stops
+            and left_margin in (None, 0)
+        ):
+            left_margin = box.tab_stops[
+                min(leading_tabs - 1, len(box.tab_stops) - 1)
+            ][0]
+            indent = left_margin
+        if left_margin is not None:
+            attributes += f' marL="{_emu(left_margin)}"'
+            attributes += f' indent="{_emu((indent or 0) - left_margin)}"'
+        elif indent is not None:
+            attributes += f' indent="{_emu(indent)}"'
         if bullet:
-            margin = _emu(216 + level * 252)
-            indent = _emu(216 if level == 0 else 180)
-            attributes += f' marL="{margin}" indent="-{indent}"'
+            if left_margin is None and indent is None and box.is_placeholder:
+                margin = _emu(216 + level * 252)
+                generic_indent = _emu(216 if level == 0 else 180)
+                attributes += f' marL="{margin}" indent="-{generic_indent}"'
             bullet_char = box.paragraph_bullet_chars[index] if index < len(box.paragraph_bullet_chars) else None
             bullet_xml = f'<a:buChar char="{_xml(bullet_char or "•")}"/>'
         else:
             bullet_xml = '<a:buNone/>'
-        ppr = f'<a:pPr{attributes}>{bullet_xml}</a:pPr>'
+        tabs_xml = ""
+        if box.tab_stops:
+            tabs_xml = "<a:tabLst>" + "".join(
+                f'<a:tab pos="{_emu(position)}" algn="{alignment}"/>'
+                for position, alignment in box.tab_stops
+                if position >= 0
+            ) + "</a:tabLst>"
+        spacing_xml = ""
+        for tag, values in (
+            ("lnSpc", box.paragraph_line_spacings),
+            ("spcBef", box.paragraph_space_before),
+            ("spcAft", box.paragraph_space_after),
+        ):
+            spacing = values[index] if index < len(values) else None
+            if spacing is None:
+                continue
+            if spacing >= 0:
+                value_xml = f'<a:spcPct val="{spacing * 1000}"/>'
+            else:
+                value_xml = f'<a:spcPts val="{round(-spacing * 12.5)}"/>'
+            spacing_xml += f"<a:{tag}>{value_xml}</a:{tag}>"
+        ppr = f'<a:pPr{attributes}>{spacing_xml}{bullet_xml}{tabs_xml}</a:pPr>'
         runs: list[str] = []
         for value, style in fragments:
             attrs = ['lang="en-US"']
@@ -50,6 +110,7 @@ def _paragraphs(box: TextBox, hyperlink_ids: dict[str, str]) -> str:
             if style.italic is not None: attrs.append(f'i="{1 if style.italic else 0}"')
             if style.underline is not None: attrs.append(f'u="{"sng" if style.underline else "none"}"')
             if style.font_size: attrs.append(f'sz="{style.font_size * 100}"')
+            if style.baseline is not None: attrs.append(f'baseline="{style.baseline * 1000}"')
             color = f'<a:solidFill><a:srgbClr val="{style.color}"/></a:solidFill>' if style.color else ''
             typeface = f'<a:latin typeface="{_xml(style.typeface)}"/><a:ea typeface="{_xml(style.typeface)}"/>' if style.typeface else ''
             hyperlink = f'<a:hlinkClick r:id="{hyperlink_ids[style.hyperlink]}"/>' if style.hyperlink in hyperlink_ids else ''
@@ -66,14 +127,56 @@ def _xfrm_attributes(rotation: int, flip_horizontal: bool, flip_vertical: bool) 
     if flip_vertical: values.append('flipV="1"')
     return (" " + " ".join(values)) if values else ""
 
-def _fill_xml(color: str | None) -> str:
+def _xfrm_box(
+    left: int, top: int, width: int, height: int, rotation: int
+) -> tuple[int, int, int, int]:
+    normalized = rotation % 21600000
+    if normalized in (5400000, 16200000):
+        return (
+            round(left + (width - height) / 2),
+            round(top + (height - width) / 2),
+            height,
+            width,
+        )
+    return left, top, width, height
+
+def _fill_xml(
+    color: str | None,
+    pattern: str | None = None,
+    back_color: str | None = None,
+) -> str:
+    if color and pattern and back_color:
+        return (
+            f'<a:pattFill prst="{pattern}">'
+            f'<a:fgClr><a:srgbClr val="{color}"/></a:fgClr>'
+            f'<a:bgClr><a:srgbClr val="{back_color}"/></a:bgClr>'
+            f'</a:pattFill>'
+        )
     return f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>' if color else '<a:noFill/>'
 
-def _line_xml(color: str | None, dash: str | None = None) -> str:
+def _line_xml(
+    color: str | None,
+    dash: str | None = None,
+    width: int | None = None,
+    head: tuple[str, str | None, str | None] | None = None,
+    tail: tuple[str, str | None, str | None] | None = None,
+) -> str:
+    width_attr = f' w="{width}"' if width is not None else ""
     if not color:
-        return '<a:ln><a:noFill/></a:ln>'
+        return f'<a:ln{width_attr}><a:noFill/></a:ln>'
     dash_xml = f'<a:prstDash val="{dash}"/>' if dash else ''
-    return f'<a:ln><a:solidFill><a:srgbClr val="{color}"/></a:solidFill>{dash_xml}</a:ln>'
+    ends = ""
+    for tag, value in (("headEnd", head), ("tailEnd", tail)):
+        if value is None:
+            continue
+        kind, arrow_width, arrow_length = value
+        attributes = f' type="{kind}"'
+        if arrow_width:
+            attributes += f' w="{arrow_width}"'
+        if arrow_length:
+            attributes += f' len="{arrow_length}"'
+        ends += f"<a:{tag}{attributes}/>"
+    return f'<a:ln{width_attr}><a:solidFill><a:srgbClr val="{color}"/></a:solidFill>{dash_xml}{ends}</a:ln>'
 
 def _path_xml(shape: BasicShape) -> str:
     if not shape.path:
@@ -94,10 +197,11 @@ def _path_xml(shape: BasicShape) -> str:
             )
         elif kind == "Z":
             commands.append('<a:close/>')
+    fill_attribute = ' fill="none"' if shape.fill_color is None else ""
     return (
         f'<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/>'
         f'<a:rect l="l" t="t" r="r" b="b"/>'
-        f'<a:pathLst><a:path w="{shape.path_width}" h="{shape.path_height}">'
+        f'<a:pathLst><a:path w="{shape.path_width}" h="{shape.path_height}"{fill_attribute}>'
         f'{"".join(commands)}</a:path></a:pathLst></a:custGeom>'
     )
 
@@ -131,17 +235,33 @@ def _header_footer_shapes(value: HeaderFooter | None, slide_width: int, slide_he
     return result
 
 def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, hidden: bool) -> str:
-    drawing_shapes = []
+    background_drawing_shapes = []
+    foreground_drawing_shapes = []
     for index, shape in enumerate(basic_shapes, 2):
-        fill = _fill_xml(shape.fill_color)
-        line = _line_xml(shape.line_color, shape.line_dash)
+        fill = _fill_xml(shape.fill_color, shape.fill_pattern, shape.fill_back_color)
+        line = _line_xml(
+            shape.line_color, shape.line_dash, shape.line_width,
+            shape.line_head, shape.line_tail,
+        )
         geom = _path_xml(shape)
-        drawing_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="{shape.preset} {index}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(shape.rotation, shape.flip_horizontal, shape.flip_vertical)}><a:off x="{_emu(shape.left)}" y="{_emu(shape.top)}"/><a:ext cx="{_emu(shape.width)}" cy="{_emu(shape.height)}"/></a:xfrm>{geom}{fill}{line}</p:spPr></p:sp>')
+        left, top, width, height = _xfrm_box(
+            shape.left, shape.top, shape.width, shape.height, shape.rotation
+        )
+        shape_xml = f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="{shape.preset} {index}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(shape.rotation, shape.flip_horizontal, shape.flip_vertical)}><a:off x="{_emu(left)}" y="{_emu(top)}"/><a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm>{geom}{fill}{line}</p:spPr></p:sp>'
+        target = (
+            background_drawing_shapes
+            if shape.fill_color and shape.width * shape.height >= 1_000_000
+            else foreground_drawing_shapes
+        )
+        target.append(shape_xml)
     text_shapes = []
     for index, box in enumerate(parts, len(basic_shapes) + 2):
         paragraphs = _paragraphs(box, hyperlink_ids)
-        fill = _fill_xml(box.fill_color)
-        line = _line_xml(box.line_color, box.line_dash)
+        fill = _fill_xml(box.fill_color, box.fill_pattern, box.fill_back_color)
+        line = _line_xml(
+            box.line_color, box.line_dash, box.line_width,
+            box.line_head, box.line_tail,
+        )
         anchor = f' anchor="{box.vertical_anchor}"' if box.vertical_anchor else ''
         autofit = (
             '<a:spAutoFit/>' if box.fit_shape_to_text
@@ -149,19 +269,52 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
             else ''
         )
         wrap = "square" if box.wrap_text else "none"
-        text_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="Text Box {index-1}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(box.rotation, box.flip_horizontal, box.flip_vertical)}><a:off x="{_emu(box.left)}" y="{_emu(box.top)}"/><a:ext cx="{_emu(box.width)}" cy="{_emu(box.height)}"/></a:xfrm><a:prstGeom prst="{box.preset}"><a:avLst/></a:prstGeom>{fill}{line}</p:spPr><p:txBody><a:bodyPr wrap="{wrap}"{anchor}>{autofit}</a:bodyPr><a:lstStyle/>{paragraphs}</p:txBody></p:sp>')
+        insets = "".join(
+            f' {name}="{value}"'
+            for name, value in (
+                ("lIns", box.inset_left),
+                ("tIns", box.inset_top),
+                ("rIns", box.inset_right),
+                ("bIns", box.inset_bottom),
+            )
+            if value is not None
+        )
+        left, top, width, height = _xfrm_box(
+            box.left, box.top, box.width, box.height, box.rotation
+        )
+        text_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="Text Box {index-1}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(box.rotation, box.flip_horizontal, box.flip_vertical)}><a:off x="{_emu(left)}" y="{_emu(top)}"/><a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm><a:prstGeom prst="{box.preset}"><a:avLst/></a:prstGeom>{fill}{line}</p:spPr><p:txBody><a:bodyPr wrap="{wrap}"{anchor}{insets}>{autofit}</a:bodyPr><a:lstStyle/>{paragraphs}</p:txBody></p:sp>')
     footer_shapes = _header_footer_shapes(header_footer, slide_width, slide_height, slide_number,
                                           len(basic_shapes) + len(parts) + 2)
-    picture_shapes = []
+    base_picture_shapes = []
+    overlay_picture_shapes = []
     for index, (picture, relation_id) in enumerate(pictures, len(basic_shapes) + len(parts) + len(footer_shapes) + 2):
         crop = f'<a:srcRect l="{picture.crop_left}" t="{picture.crop_top}" r="{picture.crop_right}" b="{picture.crop_bottom}"/>' if any((picture.crop_left, picture.crop_top, picture.crop_right, picture.crop_bottom)) else ''
-        picture_shapes.append(f'<p:pic><p:nvPicPr><p:cNvPr id="{index}" name="Picture {index}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{relation_id}"/>{crop}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm{_xfrm_attributes(picture.rotation, picture.flip_horizontal, picture.flip_vertical)}><a:off x="{_emu(picture.left)}" y="{_emu(picture.top)}"/><a:ext cx="{_emu(picture.width)}" cy="{_emu(picture.height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>')
+        transparent = (
+            f'<a:clrChange useA="1"><a:clrFrom><a:srgbClr val="{picture.transparent_color}"/>'
+            f'</a:clrFrom><a:clrTo><a:srgbClr val="{picture.transparent_color}">'
+            f'<a:alpha val="0"/></a:srgbClr></a:clrTo></a:clrChange>'
+            if picture.transparent_color else ""
+        )
+        left, top, width, height = _xfrm_box(
+            picture.left, picture.top, picture.width, picture.height,
+            picture.rotation
+        )
+        picture_xml = f'<p:pic><p:nvPicPr><p:cNvPr id="{index}" name="Picture {index}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{relation_id}">{transparent}</a:blip>{crop}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm{_xfrm_attributes(picture.rotation, picture.flip_horizontal, picture.flip_vertical)}><a:off x="{_emu(left)}" y="{_emu(top)}"/><a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+        # Large pictures are normally screenshots, plots, or photo backdrops
+        # that annotations must overlay.  Small pictures are commonly WMF
+        # equations or clip art and need to remain above filled diagram boxes.
+        target = (
+            base_picture_shapes
+            if picture.width * picture.height >= 1_000_000
+            else overlay_picture_shapes
+        )
+        target.append(picture_xml)
     if background_color and background_color_end:
         background = f'<p:bg><p:bgPr><a:gradFill rotWithShape="0"><a:gsLst><a:gs pos="0"><a:srgbClr val="{background_color}"/></a:gs><a:gs pos="100000"><a:srgbClr val="{background_color_end}"/></a:gs></a:gsLst><a:lin ang="2700000" scaled="1"/></a:gradFill><a:effectLst/></p:bgPr></p:bg>'
     else:
         background = f'<p:bg><p:bgPr><a:solidFill><a:srgbClr val="{background_color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>' if background_color else ''
     show = ' show="0"' if hidden else ''
-    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"' + show + '><p:cSld>' + background + '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' + ''.join(drawing_shapes) + ''.join(text_shapes) + ''.join(footer_shapes) + ''.join(picture_shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"' + show + '><p:cSld>' + background + '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' + ''.join(background_drawing_shapes) + ''.join(base_picture_shapes) + ''.join(foreground_drawing_shapes) + ''.join(overlay_picture_shapes) + ''.join(text_shapes) + ''.join(footer_shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
 
 def _notes_slide(values: tuple[str, ...]) -> str:
     text = "\r".join(values)

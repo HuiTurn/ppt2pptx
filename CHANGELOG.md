@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.3
+
+- Preserve legacy line widths, dash styles, arrowhead types and sizes, including
+  scaling inside nested groups.
+- Improve text fidelity with paragraph margins, indents, spacing, tab rulers,
+  text insets, vertical alignment, baseline shifts, and Symbol-font character
+  normalization.
+- Preserve transparent-color image cutouts with DrawingML color-change effects.
+- Restore additional legacy autoshapes, connector geometry, freeform arcs,
+  pattern fills, and approximate two-color gradients.
+- Improve slide layering so backgrounds, plots, equations, annotations, and
+  small overlay images retain their intended visibility.
+- Revalidate the converter against 14 supported real-world presentations and a
+  complex 30-slide presentation through rendering and overflow checks.
+
 ## 0.3.2
 
 - Preserve paragraph nesting, level-specific master text styles, bullet

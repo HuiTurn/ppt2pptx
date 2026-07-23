@@ -39,11 +39,16 @@ SHAPE_PRESETS = {
     5: "triangle", 6: "rtTriangle", 7: "parallelogram", 8: "trapezoid",
     9: "hexagon", 10: "octagon", 11: "plus", 12: "star5", 13: "rightArrow",
     19: "arc", 20: "line",
-    32: "rightArrow", 33: "leftArrow", 34: "upArrow", 35: "downArrow",
+    32: "straightConnector1", 33: "bentConnector2",
+    34: "bentConnector3", 35: "bentConnector4", 36: "bentConnector5",
+    37: "curvedConnector2", 38: "curvedConnector3",
+    39: "curvedConnector4", 40: "curvedConnector5",
     56: "pentagon", 57: "hexagon", 58: "heptagon", 59: "octagon",
     66: "star4", 67: "star5", 68: "star6", 69: "star8", 70: "star16",
-    84: "heart", 87: "lightningBolt", 88: "sun", 89: "moon",
-    125: "diamond", 183: "ellipse",
+    84: "bevel", 85: "leftBracket", 86: "rightBracket",
+    87: "leftBrace", 88: "rightBrace", 89: "leftUpArrow",
+    90: "bentUpArrow", 91: "bentArrow",
+    125: "diamond", 183: "ellipse", 184: "moon",
 }
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +78,23 @@ class TextBox:
     vertical_anchor: str | None = None
     preset: str = "rect"
     wrap_text: bool = True
+    paragraph_left_margins: tuple[int | None, ...] = ()
+    paragraph_indents: tuple[int | None, ...] = ()
+    paragraph_line_spacings: tuple[int | None, ...] = ()
+    paragraph_space_before: tuple[int | None, ...] = ()
+    paragraph_space_after: tuple[int | None, ...] = ()
+    inset_left: int | None = None
+    inset_top: int | None = None
+    inset_right: int | None = None
+    inset_bottom: int | None = None
+    is_placeholder: bool = False
+    line_width: int | None = None
+    default_tab_size: int | None = None
+    tab_stops: tuple[tuple[int, str], ...] = ()
+    fill_pattern: str | None = None
+    fill_back_color: str | None = None
+    line_head: tuple[str, str | None, str | None] | None = None
+    line_tail: tuple[str, str | None, str | None] | None = None
 
 @dataclass(frozen=True, slots=True)
 class TextRun:
@@ -84,6 +106,7 @@ class TextRun:
     color: str | None = None
     typeface: str | None = None
     hyperlink: str | None = None
+    baseline: int | None = None
 
 @dataclass(frozen=True, slots=True)
 class TextContent:
@@ -93,7 +116,14 @@ class TextContent:
     paragraph_bullets: tuple[bool, ...] = ()
     paragraph_levels: tuple[int, ...] = ()
     paragraph_bullet_chars: tuple[str | None, ...] = ()
+    paragraph_left_margins: tuple[int | None, ...] = ()
+    paragraph_indents: tuple[int | None, ...] = ()
+    paragraph_line_spacings: tuple[int | None, ...] = ()
+    paragraph_space_before: tuple[int | None, ...] = ()
+    paragraph_space_after: tuple[int | None, ...] = ()
     text_type: int = 4
+    default_tab_size: int | None = None
+    tab_stops: tuple[tuple[int, str], ...] = ()
 
 @dataclass(frozen=True, slots=True)
 class _MasterStyle:
@@ -101,6 +131,22 @@ class _MasterStyle:
     alignment: str | None
     bullet: bool | None
     bullet_char: str | None = None
+    left_margin: int | None = None
+    indent: int | None = None
+    line_spacing: int | None = None
+    space_before: int | None = None
+    space_after: int | None = None
+
+@dataclass(frozen=True, slots=True)
+class _ParagraphProperties:
+    alignment: str | None = None
+    bullet: bool | None = None
+    bullet_char: str | None = None
+    left_margin: int | None = None
+    indent: int | None = None
+    line_spacing: int | None = None
+    space_before: int | None = None
+    space_after: int | None = None
 
 @dataclass(frozen=True, slots=True)
 class Picture:
@@ -118,6 +164,7 @@ class Picture:
     rotation: int = 0
     flip_horizontal: bool = False
     flip_vertical: bool = False
+    transparent_color: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class BasicShape:
@@ -135,6 +182,11 @@ class BasicShape:
     path: tuple[tuple[object, ...], ...] | None = None
     path_width: int = 21600
     path_height: int = 21600
+    line_width: int | None = None
+    fill_pattern: str | None = None
+    fill_back_color: str | None = None
+    line_head: tuple[str, str | None, str | None] | None = None
+    line_tail: tuple[str, str | None, str | None] | None = None
 
 @dataclass(frozen=True, slots=True)
 class Comment:
@@ -255,22 +307,41 @@ def _notes_refs(document: Record) -> list[int]:
 
 def _text(record: Record) -> str | None:
     if record.type == RT_TEXT_CHARS_ATOM:
-        return record.payload.decode("utf-16le", "replace").rstrip("\x00")
+        value = record.payload.decode("utf-16le", "replace").rstrip("\x00")
+        return value.translate({
+            0xF030: "0",
+            0xF03D: "=",
+            0xF03E: ">",
+            0xF044: "Δ",
+            0xF072: "ρ",
+            0xF073: "σ",
+            0xF0AE: "→",
+            0xF0B3: "≥",
+            0xF0BB: "≈",
+            0xF0BC: "…",
+            0xF0DE: "⇒",
+        })
     if record.type == RT_TEXT_BYTES_ATOM:
         return record.payload.decode("cp1252", "replace").rstrip("\x00")
     return None
 
-def _skip_paragraph_properties(payload: bytes, position: int, mask: int) -> tuple[int, str | None, bool | None, str | None]:
+def _read_paragraph_properties(
+    payload: bytes, position: int, mask: int
+) -> tuple[int, _ParagraphProperties]:
     alignment: str | None = None
     bullet: bool | None = None
     bullet_char: str | None = None
+    left_margin = indent = line_spacing = space_before = space_after = None
     fixed = ((0xF, 2), (0x80, 2), (0x10, 2), (0x40, 2), (0x20, 4),
              (0x800, 2), (0x1000, 2), (0x2000, 2), (0x4000, 2),
              (0x100, 2), (0x400, 2), (0x8000, 2))
     for property_mask, size in fixed:
         if mask & property_mask:
             if position + size > len(payload):
-                return len(payload), alignment, bullet, bullet_char
+                return len(payload), _ParagraphProperties(
+                    alignment, bullet, bullet_char, left_margin, indent,
+                    line_spacing, space_before, space_after
+                )
             raw = payload[position:position + size]
             value = int.from_bytes(raw, "little", signed=size == 2)
             if property_mask == 0xF:
@@ -280,16 +351,113 @@ def _skip_paragraph_properties(payload: bytes, position: int, mask: int) -> tupl
                 bullet_char = chr(codepoint) if codepoint else None
             elif property_mask == 0x800:
                 alignment = {0: "l", 1: "ctr", 2: "r", 3: "just", 4: "dist"}.get(value)
+            elif property_mask == 0x100:
+                left_margin = value
+            elif property_mask == 0x400:
+                indent = value
+            elif property_mask == 0x1000:
+                line_spacing = value
+            elif property_mask == 0x2000:
+                space_before = value
+            elif property_mask == 0x4000:
+                space_after = value
             position += size
     if mask & 0x100000:
         if position + 2 > len(payload):
-            return len(payload), alignment, bullet, bullet_char
+            return len(payload), _ParagraphProperties(
+                alignment, bullet, bullet_char, left_margin, indent,
+                line_spacing, space_before, space_after
+            )
         count = struct.unpack_from("<H", payload, position)[0]
         position += min(2 + count * 4, len(payload) - position)
     for property_mask in (0x10000, 0xE0000, 0x200000):
         if mask & property_mask:
             position = min(position + 2, len(payload))
-    return position, alignment, bullet, bullet_char
+    return position, _ParagraphProperties(
+        alignment, bullet, bullet_char, left_margin, indent,
+        line_spacing, space_before, space_after
+    )
+
+def _skip_paragraph_properties(
+    payload: bytes, position: int, mask: int
+) -> tuple[int, str | None, bool | None, str | None]:
+    position, style = _read_paragraph_properties(payload, position, mask)
+    return position, style.alignment, style.bullet, style.bullet_char
+
+def _parse_text_ruler(
+    payload: bytes,
+) -> tuple[tuple[int | None, int | None], ...]:
+    return _parse_text_ruler_details(payload)[0]
+
+def _parse_text_ruler_details(
+    payload: bytes,
+) -> tuple[
+    tuple[tuple[int | None, int | None], ...],
+    int | None,
+    tuple[tuple[int, str], ...],
+]:
+    """Return margins, default tab size, and explicit tab stops."""
+    values: list[list[int | None]] = [[None, None] for _ in range(5)]
+    if len(payload) < 4:
+        return tuple((left, indent) for left, indent in values), None, ()
+    mask = struct.unpack_from("<I", payload)[0]
+    position = 4
+    default_tab_size = None
+    tabs: list[tuple[int, str]] = []
+
+    def skip_short() -> bool:
+        nonlocal position
+        if position + 2 > len(payload):
+            position = len(payload)
+            return False
+        position += 2
+        return True
+
+    # TextRuler serializes cLevels before defaultTabSize, irrespective of bit order.
+    if mask & 0x2 and not skip_short():
+        return tuple((left, indent) for left, indent in values), None, ()
+    if mask & 0x1:
+        if position + 2 > len(payload):
+            return tuple((left, indent) for left, indent in values), None, ()
+        default_tab_size = struct.unpack_from("<h", payload, position)[0]
+        position += 2
+    if mask & 0x4:
+        if position + 2 > len(payload):
+            return (
+                tuple((left, indent) for left, indent in values),
+                default_tab_size,
+                (),
+            )
+        count = struct.unpack_from("<H", payload, position)[0]
+        position += 2
+        for _ in range(count):
+            if position + 4 > len(payload):
+                position = len(payload)
+                break
+            tab_position, tab_alignment = struct.unpack_from(
+                "<hH", payload, position
+            )
+            tabs.append((
+                tab_position,
+                {0: "l", 1: "ctr", 2: "r", 3: "dec"}.get(tab_alignment, "l"),
+            ))
+            position += 4
+    for level in range(5):
+        if mask & (1 << (3 + level)):
+            if position + 2 > len(payload):
+                break
+            values[level][0] = struct.unpack_from("<h", payload, position)[0]
+            position += 2
+        if mask & (1 << (8 + level)):
+            if position + 2 > len(payload):
+                break
+            values[level][1] = struct.unpack_from("<h", payload, position)[0]
+            position += 2
+    return (
+        tuple((left, indent) for left, indent in values),
+        default_tab_size,
+        tuple(tabs),
+    )
 
 def _text_color(value: int, scheme: tuple[str, ...]) -> str | None:
     high = value >> 24
@@ -304,6 +472,7 @@ def _character_style(payload: bytes, position: int, mask: int, fonts: tuple[str,
     font_size = None
     color = None
     font_index = None
+    baseline = None
     if mask & 0xFFFF:
         if position + 2 > len(payload):
             return len(payload), TextRun("")
@@ -323,15 +492,18 @@ def _character_style(payload: bytes, position: int, mask: int, fonts: tuple[str,
         font_size = struct.unpack_from("<H", payload, position)[0]; position += 2
     if mask & 0x40000 and position + 4 <= len(payload):
         color = _text_color(struct.unpack_from("<I", payload, position)[0], scheme); position += 4
-    if mask & 0x80000:
-        position = min(position + 2, len(payload))
+    if mask & 0x80000 and position + 2 <= len(payload):
+        baseline = struct.unpack_from("<h", payload, position)[0]
+        position += 2
     return position, TextRun("", bold, italic, underline, font_size, color,
-                             fonts[font_index] if font_index is not None and font_index < len(fonts) else None)
+                             fonts[font_index] if font_index is not None and font_index < len(fonts) else None,
+                             baseline=baseline)
 
 def _merge_style(value: str, explicit: TextRun, master: TextRun | None) -> TextRun:
     if master is None:
         return TextRun(value, explicit.bold, explicit.italic, explicit.underline,
-                       explicit.font_size, explicit.color, explicit.typeface, explicit.hyperlink)
+                       explicit.font_size, explicit.color, explicit.typeface,
+                       explicit.hyperlink, explicit.baseline)
     return TextRun(value,
                    explicit.bold if explicit.bold is not None else master.bold,
                    explicit.italic if explicit.italic is not None else master.italic,
@@ -339,7 +511,8 @@ def _merge_style(value: str, explicit: TextRun, master: TextRun | None) -> TextR
                    explicit.font_size or master.font_size,
                    explicit.color or master.color,
                    explicit.typeface or master.typeface,
-                   explicit.hyperlink)
+                   explicit.hyperlink,
+                   explicit.baseline if explicit.baseline is not None else master.baseline)
 
 def _master_at_level(masters: tuple[_MasterStyle, ...], level: int) -> _MasterStyle | None:
     if not masters:
@@ -351,24 +524,32 @@ def _master_at_level(masters: tuple[_MasterStyle, ...], level: int) -> _MasterSt
             current.alignment if current.alignment is not None else effective.alignment,
             current.bullet if current.bullet is not None else effective.bullet,
             current.bullet_char or effective.bullet_char,
+            current.left_margin if current.left_margin is not None else effective.left_margin,
+            current.indent if current.indent is not None else effective.indent,
+            current.line_spacing if current.line_spacing is not None else effective.line_spacing,
+            current.space_before if current.space_before is not None else effective.space_before,
+            current.space_after if current.space_after is not None else effective.space_after,
         )
     return effective
 
 def _style_text(text: str, payload: bytes, fonts: tuple[str, ...],
                 masters: tuple[_MasterStyle, ...], scheme: tuple[str, ...],
-                text_type: int) -> TextContent:
+                text_type: int,
+                ruler: tuple[tuple[int | None, int | None], ...] = (),
+                default_tab_size: int | None = None,
+                tab_stops: tuple[tuple[int, str], ...] = ()) -> TextContent:
     position = handled = 0
-    paragraph_runs: list[tuple[int, int, int, str | None, bool | None, str | None]] = []
+    paragraph_runs: list[tuple[int, int, int, _ParagraphProperties]] = []
     while position + 10 <= len(payload) and handled < len(text) + 1:
         count = struct.unpack_from("<I", payload, position)[0]
         level = max(0, min(4, struct.unpack_from("<h", payload, position + 4)[0]))
         mask = struct.unpack_from("<I", payload, position + 6)[0]
-        position, alignment, bullet, bullet_char = _skip_paragraph_properties(
+        position, paragraph_style = _read_paragraph_properties(
             payload, position + 10, mask
         )
         if not count:
             break
-        paragraph_runs.append((handled, handled + count, level, alignment, bullet, bullet_char))
+        paragraph_runs.append((handled, handled + count, level, paragraph_style))
         handled += count
     character_runs: list[tuple[int, int, TextRun]] = []
     handled = 0
@@ -403,18 +584,78 @@ def _style_text(text: str, payload: bytes, fonts: tuple[str, ...],
     bullets: list[bool] = []
     levels: list[int] = []
     bullet_chars: list[str | None] = []
+    left_margins: list[int | None] = []
+    indents: list[int | None] = []
+    line_spacings: list[int | None] = []
+    space_before: list[int | None] = []
+    space_after: list[int | None] = []
     paragraph_start = 0
     for paragraph in text.split("\r"):
         style = next((run for run in paragraph_runs if run[0] <= paragraph_start < run[1]), None)
         level = style[2] if style else 0
+        paragraph_style = style[3] if style else _ParagraphProperties()
         master = _master_at_level(masters, level)
-        alignments.append(style[3] if style and style[3] is not None else master.alignment if master else None)
-        bullets.append(style[4] if style and style[4] is not None else bool(master.bullet) if master else False)
+        ruler_left, ruler_indent = ruler[level] if level < len(ruler) else (None, None)
+        alignments.append(
+            paragraph_style.alignment
+            if paragraph_style.alignment is not None
+            else master.alignment if master else None
+        )
+        bullets.append(
+            paragraph_style.bullet
+            if paragraph_style.bullet is not None
+            else bool(master.bullet) if master else False
+        )
         levels.append(level)
-        bullet_chars.append(style[5] if style and style[5] is not None else master.bullet_char if master else None)
+        bullet_chars.append(
+            paragraph_style.bullet_char
+            if paragraph_style.bullet_char is not None
+            else master.bullet_char if master else None
+        )
+        left_margins.append(
+            paragraph_style.left_margin
+            if paragraph_style.left_margin is not None
+            else ruler_left if ruler_left is not None
+            else master.left_margin if master else None
+        )
+        indents.append(
+            paragraph_style.indent
+            if paragraph_style.indent is not None
+            else ruler_indent if ruler_indent is not None
+            else master.indent if master else None
+        )
+        line_spacings.append(
+            paragraph_style.line_spacing
+            if paragraph_style.line_spacing is not None
+            else master.line_spacing if master else None
+        )
+        space_before.append(
+            paragraph_style.space_before
+            if paragraph_style.space_before is not None
+            else master.space_before if master else None
+        )
+        space_after.append(
+            paragraph_style.space_after
+            if paragraph_style.space_after is not None
+            else master.space_after if master else None
+        )
         paragraph_start += len(paragraph) + 1
-    return TextContent(text, tuple(styled_runs), tuple(alignments), tuple(bullets),
-                       tuple(levels), tuple(bullet_chars), text_type)
+    return TextContent(
+        text=text,
+        runs=tuple(styled_runs),
+        paragraph_alignments=tuple(alignments),
+        paragraph_bullets=tuple(bullets),
+        paragraph_levels=tuple(levels),
+        paragraph_bullet_chars=tuple(bullet_chars),
+        paragraph_left_margins=tuple(left_margins),
+        paragraph_indents=tuple(indents),
+        paragraph_line_spacings=tuple(line_spacings),
+        paragraph_space_before=tuple(space_before),
+        paragraph_space_after=tuple(space_after),
+        text_type=text_type,
+        default_tab_size=default_tab_size,
+        tab_stops=tab_stops,
+    )
 
 def _apply_hyperlinks(content: TextContent, spans: list[tuple[int, int, str]]) -> TextContent:
     if not spans:
@@ -431,11 +672,24 @@ def _apply_hyperlinks(content: TextContent, spans: list[tuple[int, int, str]]) -
             value = run.text[left - offset:right - offset]
             url = next((target for start, end, target in spans if start <= left < end), None)
             output.append(TextRun(value, run.bold, run.italic, True if url else run.underline,
-                                  run.font_size, run.color, run.typeface, url))
+                                  run.font_size, run.color, run.typeface, url, run.baseline))
         offset += len(run.text)
-    return TextContent(content.text, tuple(output), content.paragraph_alignments,
-                       content.paragraph_bullets, content.paragraph_levels,
-                       content.paragraph_bullet_chars, content.text_type)
+    return TextContent(
+        text=content.text,
+        runs=tuple(output),
+        paragraph_alignments=content.paragraph_alignments,
+        paragraph_bullets=content.paragraph_bullets,
+        paragraph_levels=content.paragraph_levels,
+        paragraph_bullet_chars=content.paragraph_bullet_chars,
+        paragraph_left_margins=content.paragraph_left_margins,
+        paragraph_indents=content.paragraph_indents,
+        paragraph_line_spacings=content.paragraph_line_spacings,
+        paragraph_space_before=content.paragraph_space_before,
+        paragraph_space_after=content.paragraph_space_after,
+        text_type=content.text_type,
+        default_tab_size=content.default_tab_size,
+        tab_stops=content.tab_stops,
+    )
 
 def _text_contents(source_records: list[Record], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...]) -> list[TextContent]:
     result: list[TextContent] = []
@@ -451,18 +705,57 @@ def _text_contents(source_records: list[Record], fonts: tuple[str, ...], masters
         next_text = next((position for position, candidate in enumerate(tail) if candidate.type in (RT_TEXT_CHARS_ATOM, RT_TEXT_BYTES_ATOM, RT_SLIDE_PERSIST_ATOM)), len(tail))
         related = tail[:next_text]
         style = next((candidate for candidate in related if candidate.type == 4001), None)
+        ruler_atom = next((candidate for candidate in related if candidate.type == 4006), None)
+        ruler, default_tab_size, tab_stops = (
+            _parse_text_ruler_details(ruler_atom.payload)
+            if ruler_atom else ((), None, ())
+        )
         master = masters.get(text_type, ())
         base = master[0] if master else None
         if style is not None and style.type == 4001:
-            content = _style_text(value, style.payload, fonts, master, scheme, text_type)
+            content = _style_text(
+                value, style.payload, fonts, master, scheme, text_type, ruler,
+                default_tab_size, tab_stops,
+            )
         else:
             paragraphs = value.split("\r")
-            content = TextContent(value, (_merge_style(value, TextRun(""), base.run if base else None),),
-                                  tuple(base.alignment if base else None for _ in paragraphs),
-                                  tuple(bool(base.bullet) if base else False for _ in paragraphs),
-                                  tuple(0 for _ in paragraphs),
-                                  tuple(base.bullet_char if base else None for _ in paragraphs),
-                                  text_type)
+            ruler_left, ruler_indent = ruler[0] if ruler else (None, None)
+            content = TextContent(
+                text=value,
+                runs=(_merge_style(value, TextRun(""), base.run if base else None),),
+                paragraph_alignments=tuple(
+                    base.alignment if base else None for _ in paragraphs
+                ),
+                paragraph_bullets=tuple(
+                    bool(base.bullet) if base else False for _ in paragraphs
+                ),
+                paragraph_levels=tuple(0 for _ in paragraphs),
+                paragraph_bullet_chars=tuple(
+                    base.bullet_char if base else None for _ in paragraphs
+                ),
+                paragraph_left_margins=tuple(
+                    ruler_left if ruler_left is not None
+                    else base.left_margin if base else None
+                    for _ in paragraphs
+                ),
+                paragraph_indents=tuple(
+                    ruler_indent if ruler_indent is not None
+                    else base.indent if base else None
+                    for _ in paragraphs
+                ),
+                paragraph_line_spacings=tuple(
+                    base.line_spacing if base else None for _ in paragraphs
+                ),
+                paragraph_space_before=tuple(
+                    base.space_before if base else None for _ in paragraphs
+                ),
+                paragraph_space_after=tuple(
+                    base.space_after if base else None for _ in paragraphs
+                ),
+                text_type=text_type,
+                default_tab_size=default_tab_size,
+                tab_stops=tab_stops,
+            )
         spans: list[tuple[int, int, str]] = []
         pending_id: int | None = None
         for candidate in related:
@@ -503,14 +796,24 @@ def _master_text_styles(powerpoint_document: bytes, document: Record, fonts: tup
             if position + 4 > len(atom.payload):
                 break
             paragraph_mask = struct.unpack_from("<I", atom.payload, position)[0]
-            position, alignment, bullet, bullet_char = _skip_paragraph_properties(
+            position, paragraph_style = _read_paragraph_properties(
                 atom.payload, position + 4, paragraph_mask
             )
             if position + 4 > len(atom.payload):
                 break
             character_mask = struct.unpack_from("<I", atom.payload, position)[0]
             position, run = _character_style(atom.payload, position + 4, character_mask, fonts, scheme)
-            styles.append(_MasterStyle(run, alignment, bullet, bullet_char))
+            styles.append(_MasterStyle(
+                run,
+                paragraph_style.alignment,
+                paragraph_style.bullet,
+                paragraph_style.bullet_char,
+                paragraph_style.left_margin,
+                paragraph_style.indent,
+                paragraph_style.line_spacing,
+                paragraph_style.space_before,
+                paragraph_style.space_after,
+            ))
         if styles:
             result[atom.instance] = tuple(styles)
     for child_type, parent_type in ((5, 1), (6, 0), (7, 1), (8, 1)):
@@ -525,6 +828,11 @@ def _master_text_styles(powerpoint_document: bytes, document: Record, fonts: tup
                 child_style.alignment if child_style.alignment is not None else parent_style.alignment,
                 child_style.bullet if child_style.bullet is not None else parent_style.bullet,
                 child_style.bullet_char or parent_style.bullet_char,
+                child_style.left_margin if child_style.left_margin is not None else parent_style.left_margin,
+                child_style.indent if child_style.indent is not None else parent_style.indent,
+                child_style.line_spacing if child_style.line_spacing is not None else parent_style.line_spacing,
+                child_style.space_before if child_style.space_before is not None else parent_style.space_before,
+                child_style.space_after if child_style.space_after is not None else parent_style.space_after,
             ))
         result[child_type] = tuple(merged)
     return result
@@ -765,6 +1073,81 @@ def _is_background_shape(children: list[Record]) -> bool:
         return False
     return bool(struct.unpack_from("<I", sp.payload, 4)[0] & 0x400)
 
+def _character_width(character: str, font_size: int) -> float:
+    if character == " ":
+        factor = 0.28
+    elif character in "ilIjtfr.,:;'|!":
+        factor = 0.28
+    elif character in "MW@%&":
+        factor = 0.85
+    elif ord(character) > 0x2FF:
+        factor = 1.0
+    elif character.isupper():
+        factor = 0.65
+    else:
+        factor = 0.5
+    return font_size * 8 * factor
+
+def _minimum_unwrapped_width(content: TextContent) -> int:
+    """Estimate the width PowerPoint gives an auto-sized, non-wrapping text box."""
+    line_width = maximum = 0.0
+    for run in content.runs or (TextRun(content.text),):
+        font_size = run.font_size or 18
+        for character in run.text:
+            if character in "\r\n":
+                maximum = max(maximum, line_width)
+                line_width = 0.0
+                continue
+            line_width += _character_width(character, font_size)
+    maximum = max(maximum, line_width)
+    # Default DrawingML left/right text insets are 0.1in each.
+    # A small safety allowance prevents LibreOffice from wrapping at a
+    # borderline glyph advance that PowerPoint kept on one line.
+    return round((maximum + 2 * 57.6) * 1.15)
+
+def _minimum_wrapped_height(
+    content: TextContent,
+    width: int,
+    inset_left: int | None,
+    inset_top: int | None,
+    inset_right: int | None,
+    inset_bottom: int | None,
+) -> int:
+    # Text insets in OfficeArt FOPT are already EMUs, while anchors and the
+    # estimates in this module use the legacy 576-units-per-inch coordinate
+    # system.  Mixing those units can turn a normal text box into a shape
+    # hundreds of slides tall.
+    def inset_units(value: int | None, default: float) -> float:
+        return default if value is None else value * 576 / 914400
+
+    available = max(
+        1,
+        width
+        - inset_units(inset_left, 57.6)
+        - inset_units(inset_right, 57.6),
+    )
+    paragraphs: list[tuple[float, int]] = [(0.0, 18)]
+    for run in content.runs or (TextRun(content.text),):
+        font_size = run.font_size or 18
+        for character in run.text:
+            if character in "\r\n":
+                paragraphs.append((0.0, font_size))
+                continue
+            line_width, maximum_size = paragraphs[-1]
+            paragraphs[-1] = (
+                line_width + _character_width(character, font_size),
+                max(maximum_size, font_size),
+            )
+    text_height = sum(
+        max(1, math.ceil(line_width / available)) * font_size * 8 * 1.15
+        for line_width, font_size in paragraphs
+    )
+    vertical_insets = (
+        inset_units(inset_top, 29.5)
+        + inset_units(inset_bottom, 29.5)
+    )
+    return round(text_height + vertical_insets)
+
 def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...], *, skip_placeholders: bool = False) -> list[TextBox]:
     result: list[TextBox] = []
     for shape, space in _iter_sp_containers(slide):
@@ -788,7 +1171,7 @@ def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tu
         left, top, width, height = _anchor(children, len(result), space)
         fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
         properties = _fopt_properties(fopt) if fopt else {}
-        fill, line, dash = _shape_style(properties, scheme)
+        fill, line, dash, fill_pattern, fill_back = _shape_style(properties, scheme)
         transform = _combine_transform(_transform(children, properties), space)
         sp = next((child for child in children if child.type == 0xF00A), None)
         preset = SHAPE_PRESETS.get(sp.instance, "rect") if sp is not None else "rect"
@@ -798,20 +1181,92 @@ def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tu
             else "b" if text_anchor in (2, 5)
             else None
         )
+        if 135 not in properties and is_placeholder and content.text_type in (0, 6):
+            vertical_anchor = "ctr"
         text_flags = properties.get(191, 0)
         auto_fit = (
             (is_placeholder and content.text_type in (1, 5, 7, 8))
             or bool(text_flags & 0x40000 and text_flags & 0x4)
         )
         fit_shape_to_text = bool(text_flags & 0x20000 and text_flags & 0x2)
-        result.append(TextBox(content.text, left, top, width, height, content.runs,
-                              content.paragraph_alignments, content.paragraph_bullets,
-                              *transform, fill, line, dash,
-                              content.paragraph_levels, content.paragraph_bullet_chars,
-                              auto_fit, fit_shape_to_text,
-                              vertical_anchor,
-                              preset,
-                              properties.get(133, 0) != 2))
+        wrap_text = properties.get(133, 0) != 2
+        if fit_shape_to_text and not wrap_text and fill is None and line is None:
+            fitted_width = _minimum_unwrapped_width(content)
+            if fitted_width > width:
+                growth = fitted_width - width
+                alignments = tuple(
+                    alignment for alignment in content.paragraph_alignments
+                    if alignment is not None
+                )
+                if alignments and all(alignment == "ctr" for alignment in alignments):
+                    left -= round(growth / 2)
+                elif alignments and all(alignment == "r" for alignment in alignments):
+                    left -= growth
+                width = fitted_width
+        elif fit_shape_to_text and wrap_text:
+            fitted_height = _minimum_wrapped_height(
+                content,
+                width,
+                properties.get(129) if 129 in properties else None,
+                properties.get(130) if 130 in properties else None,
+                properties.get(131) if 131 in properties else None,
+                properties.get(132) if 132 in properties else None,
+            )
+            if fitted_height > height:
+                growth = fitted_height - height
+                if vertical_anchor == "ctr":
+                    top -= round(growth / 2)
+                elif vertical_anchor == "b":
+                    top -= growth
+                height = fitted_height
+        result.append(TextBox(
+            text=content.text,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            runs=content.runs,
+            paragraph_alignments=content.paragraph_alignments,
+            paragraph_bullets=content.paragraph_bullets,
+            rotation=transform[0],
+            flip_horizontal=transform[1],
+            flip_vertical=transform[2],
+            fill_color=fill,
+            line_color=line,
+            line_dash=dash,
+            paragraph_levels=content.paragraph_levels,
+            paragraph_bullet_chars=content.paragraph_bullet_chars,
+            auto_fit=auto_fit,
+            fit_shape_to_text=fit_shape_to_text,
+            vertical_anchor=vertical_anchor,
+            preset=preset,
+            wrap_text=wrap_text,
+            paragraph_left_margins=content.paragraph_left_margins,
+            paragraph_indents=content.paragraph_indents,
+            paragraph_line_spacings=content.paragraph_line_spacings,
+            paragraph_space_before=content.paragraph_space_before,
+            paragraph_space_after=content.paragraph_space_after,
+            inset_left=properties.get(129) if 129 in properties else None,
+            inset_top=properties.get(130) if 130 in properties else None,
+            inset_right=properties.get(131) if 131 in properties else None,
+            inset_bottom=properties.get(132) if 132 in properties else None,
+            is_placeholder=is_placeholder,
+            line_width=_line_width(properties, space),
+            # Legacy text boxes commonly use a leading tab as a compact
+            # alignment aid.  DrawingML's larger implicit tab interval makes
+            # those lines wrap, so preserve the legacy half-inch fallback.
+            default_tab_size=(
+                content.default_tab_size
+                if content.default_tab_size is not None
+                else 288 if "\t" in content.text and not content.tab_stops
+                else None
+            ),
+            tab_stops=content.tab_stops,
+            fill_pattern=fill_pattern,
+            fill_back_color=fill_back,
+            line_head=_line_end(properties, 464, 466, 467),
+            line_tail=_line_end(properties, 465, 468, 469),
+        ))
     return result
 
 def _fopt_properties(record: Record) -> dict[int, int]:
@@ -862,15 +1317,52 @@ def _has_line(properties: dict[int, int]) -> bool:
     return bool(flags & 0x8)
 
 def _line_dash(properties: dict[int, int]) -> str | None:
-    # MS-ODRAW line dashing style: 0 solid, 1/2 dashed variants, 3 dash-dot, ...
-    style = properties.get(462)
-    if style in (1, 2, 6, 7):
-        return "dash"
-    if style in (3, 5, 8):
-        return "dashDot"
-    if style == 4:
-        return "sysDash"
-    return None
+    # Exact MSOLINEDASHING -> DrawingML preset mapping.
+    return {
+        1: "sysDash",
+        2: "sysDot",
+        3: "sysDashDot",
+        4: "sysDashDotDot",
+        5: "dot",
+        6: "dash",
+        7: "lgDash",
+        8: "dashDot",
+        9: "lgDashDot",
+        10: "lgDashDotDot",
+    }.get(properties.get(462))
+
+def _line_end(
+    properties: dict[int, int],
+    type_property: int,
+    width_property: int,
+    length_property: int,
+) -> tuple[str, str | None, str | None] | None:
+    kind = {
+        1: "triangle",
+        2: "stealth",
+        3: "diamond",
+        4: "oval",
+        5: "arrow",
+    }.get(properties.get(type_property))
+    if kind is None:
+        return None
+    sizes = {0: "sm", 1: "med", 2: "lg"}
+    return (
+        kind,
+        sizes.get(properties.get(width_property)),
+        sizes.get(properties.get(length_property)),
+    )
+
+def _line_width(
+    properties: dict[int, int], space: _GroupSpace | None
+) -> int | None:
+    width = properties.get(459)
+    if width is None:
+        return None
+    if space is not None:
+        a, b, c, d, _tx, _ty = _space_matrix(space)
+        width = round(width * math.sqrt(abs(a * d - b * c)))
+    return max(0, width)
 
 def _parse_imso_points(data: bytes) -> list[tuple[int, int]]:
     if len(data) < 6:
@@ -944,10 +1436,49 @@ def _freeform_path(properties: dict[int, int], complex_props: dict[int, bytes]) 
     height = max(properties.get(323, 0), max((y for _x, y in points), default=0), 1)
     return tuple(commands), width, height
 
-def _shape_style(properties: dict[int, int], scheme: tuple[str, ...]) -> tuple[str | None, str | None, str | None]:
+def _uses_custom_geometry(
+    shape_type: int, complex_props: dict[int, bytes]
+) -> bool:
+    # Preset shapes such as legacy arcs may carry pVertices for adjustment
+    # bookkeeping without pSegmentInfo.  Treating those vertices as an
+    # independent polygon turns smooth curves into jagged diamonds.
+    return shape_type == 0 or (325 in complex_props and 326 in complex_props)
+
+def _legacy_arc_path(
+    complex_props: dict[int, bytes],
+) -> tuple[tuple[tuple[object, ...], ...], int, int] | None:
+    """Convert the quarter-ellipse geometry carried by a legacy arc."""
+    points = _parse_imso_points(complex_props.get(325, b""))
+    if len(points) < 4:
+        return None
+    # The third and fourth guide points are the visible endpoints.  Their
+    # vertical order distinguishes the two quarter-arc orientations used to
+    # compose smooth sine waves.  11931 is the cubic Bézier circle constant
+    # (0.55228475 * 21600) expressed as the control-point distance.
+    if points[2][1] > points[3][1]:
+        path = (
+            ("M", (0, 21600)),
+            ("C", (0, 9669), (9669, 0), (21600, 0)),
+        )
+    else:
+        path = (
+            ("M", (0, 0)),
+            ("C", (11931, 0), (21600, 9669), (21600, 21600)),
+        )
+    return path, 21600, 21600
+
+def _shape_style(
+    properties: dict[int, int], scheme: tuple[str, ...]
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
     fill = _office_color(properties.get(385), scheme) if _has_fill(properties) else None
+    back = _office_color(properties.get(387), scheme)
+    fill_type = properties.get(384, 0)
+    pattern = "dkUpDiag" if fill is not None and back is not None and fill_type == 1 else None
+    if fill is not None and fill_type >= 4 and back is not None:
+        fill = back
+        back = None
     line = _office_color(properties.get(448), scheme) if _has_line(properties) else None
-    return fill, line, _line_dash(properties) if line else None
+    return fill, line, _line_dash(properties) if line else None, pattern, back if pattern else None
 
 def _transform(children: list[Record], properties: dict[int, int]) -> tuple[int, bool, bool]:
     rotation_raw = properties.get(4, 0)
@@ -996,10 +1527,19 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
         properties = _fopt_properties(fopt)
         if properties.get(260, 0) in image_map:
             continue
-        fill, line, dash = _shape_style(properties, scheme)
+        fill, line, dash, fill_pattern, fill_back = _shape_style(properties, scheme)
+        if fill is None and 385 not in properties and _has_fill(properties):
+            # Non-text preset shapes inherit OfficeArt's white fill default.
+            # Text boxes use different inheritance and must remain transparent
+            # unless a fill color is explicit.
+            fill = "FFFFFF"
         complex_props = _fopt_complex_properties(fopt)
         path = path_width = path_height = None
-        if sp.instance == 0 or 325 in complex_props:
+        if sp.instance == 19 and 325 in complex_props and 326 not in complex_props:
+            path_info = _legacy_arc_path(complex_props)
+            if path_info is not None:
+                path, path_width, path_height = path_info
+        elif _uses_custom_geometry(sp.instance, complex_props):
             path_info = _freeform_path(properties, complex_props)
             if path_info is not None:
                 path, path_width, path_height = path_info
@@ -1018,9 +1558,28 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
         if fill is None and line is None and path is None:
             continue
         left, top, width, height = _anchor(children, len(result), space)
-        result.append(BasicShape(preset, left, top, width, height, fill, line,
-                                 *_combine_transform(_transform(children, properties), space), dash,
-                                 path, path_width or 21600, path_height or 21600))
+        transform = _combine_transform(_transform(children, properties), space)
+        result.append(BasicShape(
+            preset=preset,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            fill_color=fill,
+            line_color=line,
+            rotation=transform[0],
+            flip_horizontal=transform[1],
+            flip_vertical=transform[2],
+            line_dash=dash,
+            path=path,
+            path_width=path_width or 21600,
+            path_height=path_height or 21600,
+            line_width=_line_width(properties, space),
+            fill_pattern=fill_pattern,
+            fill_back_color=fill_back,
+            line_head=_line_end(properties, 464, 466, 467),
+            line_tail=_line_end(properties, 465, 468, 469),
+        ))
     return result
 
 def _background(slide: Record, scheme: tuple[str, ...]) -> tuple[str | None, str | None]:
@@ -1134,7 +1693,11 @@ def _pictures(document: Record, stream: bytes | None) -> dict[int, tuple[bytes, 
                 result[index] = (bytes(512) + raw, "pct", "image/x-pict")
     return result
 
-def _shape_pictures(slide: Record, image_map: dict[int, tuple[bytes, str, str]]) -> list[Picture]:
+def _shape_pictures(
+    slide: Record,
+    image_map: dict[int, tuple[bytes, str, str]],
+    scheme: tuple[str, ...] = (),
+) -> list[Picture]:
     result: list[Picture] = []
     for shape, space in _iter_sp_containers(slide):
         children = _direct_children(shape)
@@ -1152,9 +1715,24 @@ def _shape_pictures(slide: Record, image_map: dict[int, tuple[bytes, str, str]])
             raw = properties.get(property_id, 0)
             signed = struct.unpack("<i", struct.pack("<I", raw))[0]
             return round(signed / 65536 * 100000)
-        result.append(Picture(data, extension, content_type, left, top, width, height,
-                              crop(258), crop(256), crop(259), crop(257),
-                              *_combine_transform(_transform(children, properties), space)))
+        transform = _combine_transform(_transform(children, properties), space)
+        result.append(Picture(
+            data=data,
+            extension=extension,
+            content_type=content_type,
+            left=left,
+            top=top,
+            width=width,
+            height=height,
+            crop_left=crop(258),
+            crop_top=crop(256),
+            crop_right=crop(259),
+            crop_bottom=crop(257),
+            rotation=transform[0],
+            flip_horizontal=transform[1],
+            flip_vertical=transform[2],
+            transparent_color=_office_color(properties.get(263), scheme),
+        ))
     return result
 
 def _presentation_size(document: Record) -> tuple[int, int]:
@@ -1224,10 +1802,15 @@ def _header_footer(record: Record, base: HeaderFooter | None = None, *, instance
     )
 
 def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int) -> Slide:
-    boxes = _shape_text_boxes(slide_record, external_text, fonts, masters, hyperlinks, scheme)
-    if not boxes:
+    slide_boxes = _shape_text_boxes(
+        slide_record, external_text, fonts, masters, hyperlinks, scheme
+    )
+    if not slide_boxes:
         texts = [value for child in descendants(slide_record) if (value := _text(child))]
-        boxes = [TextBox(text, 288, 288 + i * 576, 5184, 432, (TextRun(text),)) for i, text in enumerate(texts)]
+        slide_boxes = [
+            TextBox(text, 288, 288 + i * 576, 5184, 432, (TextRun(text),))
+            for i, text in enumerate(texts)
+        ]
     background, background_end = _background(slide_record, scheme)
     if master_record is not None:
         master_background, master_background_end = _background(master_record, scheme)
@@ -1238,16 +1821,17 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
             background, background_end = master_background, master_background_end
     # Flatten non-placeholder master decorations onto the slide so common
     # template chrome survives conversion to a blank OOXML layout.
+    master_boxes: list[TextBox] = []
+    master_pictures: list[Picture] = []
     shapes: list[BasicShape] = []
-    pictures = list(_shape_pictures(slide_record, image_map))
     if master_record is not None:
         for box in _shape_text_boxes(master_record, [], fonts, masters, hyperlinks, scheme,
                                      skip_placeholders=True):
             if box.text.strip() in ("", "*"):
                 continue
-            boxes.append(box)
-        for picture in _shape_pictures(master_record, image_map):
-            pictures.append(picture)
+            master_boxes.append(box)
+        for picture in _shape_pictures(master_record, image_map, scheme):
+            master_pictures.append(picture)
         for shape in _basic_shapes(master_record, image_map, scheme):
             left, top = max(0, shape.left), max(0, shape.top)
             right = min(slide_width, shape.left + shape.width)
@@ -1256,7 +1840,10 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                 shapes.append(BasicShape(shape.preset, left, top, right - left, bottom - top,
                                          shape.fill_color, shape.line_color, shape.rotation,
                                          shape.flip_horizontal, shape.flip_vertical,
-                                         shape.line_dash, shape.path, shape.path_width, shape.path_height))
+                                         shape.line_dash, shape.path, shape.path_width,
+                                         shape.path_height, shape.line_width,
+                                         shape.fill_pattern, shape.fill_back_color,
+                                         shape.line_head, shape.line_tail))
     for shape in _basic_shapes(slide_record, image_map, scheme):
         left, top = max(0, shape.left), max(0, shape.top)
         right = min(slide_width, shape.left + shape.width)
@@ -1265,7 +1852,14 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
             shapes.append(BasicShape(shape.preset, left, top, right - left, bottom - top,
                                      shape.fill_color, shape.line_color, shape.rotation,
                                      shape.flip_horizontal, shape.flip_vertical,
-                                     shape.line_dash, shape.path, shape.path_width, shape.path_height))
+                                     shape.line_dash, shape.path, shape.path_width,
+                                     shape.path_height, shape.line_width,
+                                     shape.fill_pattern, shape.fill_back_color,
+                                     shape.line_head, shape.line_tail))
+    boxes = master_boxes + slide_boxes
+    pictures = master_pictures + list(
+        _shape_pictures(slide_record, image_map, scheme)
+    )
     slide_show_info = next((child for child in descendants(slide_record)
                             if child.type == RT_SLIDE_SHOW_SLIDE_INFO_ATOM
                             and len(child.payload) >= 12), None)
