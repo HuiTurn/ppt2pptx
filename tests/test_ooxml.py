@@ -69,3 +69,33 @@ class OoxmlTests(unittest.TestCase):
                 hidden = ElementTree.fromstring(archive.read("ppt/slides/slide2.xml"))
         self.assertNotIn("show", visible.attrib)
         self.assertEqual(hidden.attrib["show"], "0")
+
+    def test_writes_autofit_vertical_anchor_and_nested_bullet(self):
+        box = TextBox(
+            "Top\rNested", 100, 100, 2000, 400,
+            (TextRun("Top\r", font_size=28), TextRun("Nested", font_size=24)),
+            paragraph_bullets=(True, True),
+            paragraph_levels=(0, 1),
+            paragraph_bullet_chars=("•", "–"),
+            auto_fit=True,
+            vertical_anchor="ctr",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "text-layout.pptx"
+            write_pptx(path, Presentation(5760, 4320, (Slide((box,)),)))
+            with zipfile.ZipFile(path) as archive:
+                xml = archive.read("ppt/slides/slide1.xml").decode()
+        self.assertIn('<a:bodyPr wrap="square" anchor="ctr"><a:normAutofit/></a:bodyPr>', xml)
+        self.assertIn('lvl="1"', xml)
+        self.assertIn('<a:buChar char="–"/>', xml)
+
+    def test_writes_text_shape_geometry(self):
+        box = TextBox("Inside", 100, 100, 500, 500, preset="ellipse",
+                      wrap_text=False, fit_shape_to_text=True)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ellipse.pptx"
+            write_pptx(path, Presentation(5760, 4320, (Slide((box,)),)))
+            with zipfile.ZipFile(path) as archive:
+                xml = archive.read("ppt/slides/slide1.xml").decode()
+        self.assertIn('<a:prstGeom prst="ellipse">', xml)
+        self.assertIn('<a:bodyPr wrap="none"><a:spAutoFit/></a:bodyPr>', xml)

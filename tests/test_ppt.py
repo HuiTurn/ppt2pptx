@@ -1,10 +1,45 @@
 import struct
 import unittest
-from ppt2pptx.ppt import extract_presentation, extract_slides
+from ppt2pptx.ppt import (
+    SHAPE_PRESETS, TextRun, _GroupSpace, _MasterStyle, _anchor, _fopt_complex_properties,
+    _fopt_properties, _freeform_path, _skip_paragraph_properties, _style_text,
+    extract_presentation, extract_slides, records,
+)
 
 def rec(kind, payload=b"", version=0xF, instance=0): return struct.pack("<HHI", (instance << 4) | version, kind, len(payload)) + payload
 
 class PptParserTests(unittest.TestCase):
+    def test_uses_valid_ooxml_name_for_legacy_arrow(self):
+        self.assertEqual(SHAPE_PRESETS[13], "rightArrow")
+
+    def test_stops_safely_on_truncated_paragraph_properties(self):
+        self.assertEqual(
+            _skip_paragraph_properties(b"", 0, 0x80),
+            (0, None, None, None),
+        )
+
+    def test_applies_master_style_for_each_paragraph_level(self):
+        text = "Top\rNested"
+        paragraph_runs = (
+            struct.pack("<IhI", 4, 0, 0)
+            + struct.pack("<IhI", 7, 1, 0)
+        )
+        character_runs = struct.pack("<II", len(text) + 1, 0)
+        masters = (
+            _MasterStyle(TextRun("", font_size=28, color="FFFFFF", typeface="Arial"),
+                         None, True, "•"),
+            _MasterStyle(TextRun("", font_size=24), None, None, "–"),
+        )
+
+        content = _style_text(text, paragraph_runs + character_runs, (), masters, (), 1)
+
+        self.assertEqual([(run.text, run.font_size) for run in content.runs],
+                         [("Top\r", 28), ("Nested", 24)])
+        self.assertEqual(content.paragraph_levels, (0, 1))
+        self.assertEqual(content.paragraph_bullet_chars, ("•", "–"))
+        self.assertEqual((content.runs[1].color, content.runs[1].typeface),
+                         ("FFFFFF", "Arial"))
+
     def test_extracts_text_from_direct_slide_record(self):
         text = rec(4000, "Hello\rWorld".encode("utf-16le"), 0)
         slide = rec(1006, text)
@@ -137,6 +172,81 @@ class PptParserTests(unittest.TestCase):
         self.assertEqual(box.text, "Grouped")
         # child (100,200)-(500,400) in 1000x1000 space maps into abs (200,100)-(600,500)
         self.assertEqual((box.left, box.top, box.width, box.height), (240, 180, 160, 80))
+
+    def test_keeps_large_child_anchor_in_parent_group_coordinates(self):
+        space = _GroupSpace(5_715_376, 3_000_987, 8_115_743, 5_660_414,
+                            3600, 1890, 5112, 3566)
+        child = next(records(rec(0xF00F, struct.pack(
+            "<4i", 5_715_376, 3_000_987, 8_115_743, 5_660_414
+        ), 0)))
+        self.assertEqual(_anchor([child], 0, space), (3600, 1890, 1512, 1676))
+
+    def test_respects_explicit_no_line_flag_with_stored_line_color(self):
+        slide_ref = rec(1011, struct.pack("<5I", 2, 0, 0, 0, 0), 0)
+        document = rec(1000, rec(4080, slide_ref, instance=0))
+        directory_size = len(rec(6002, struct.pack("<2I", (1 << 20) | 2, 0), 0))
+        slide_offset = len(document) + directory_size
+        directory = rec(6002, struct.pack("<2I", (1 << 20) | 2, slide_offset), 0)
+        properties = struct.pack("<HIHI", 448, 0, 511, 0x90000)
+        fopt = rec(0xF00B, properties, 3, 2)
+        textbox = rec(0xF00D, rec(4008, b"No border", 0))
+        anchor = rec(0xF010, struct.pack("<4h", 100, 100, 1000, 500), 0)
+        shape = rec(0xF004, fopt + anchor + textbox)
+        box = extract_presentation(document + directory + rec(1006, shape)).slides[0].text_boxes[0]
+        self.assertIsNone(box.line_color)
+
+    def test_preserves_geometry_for_text_bearing_shape(self):
+        ellipse = rec(0xF00A, struct.pack("<2I", 1, 0), 2, 3)
+        options = rec(0xF00B, struct.pack("<HIHI", 133, 2, 135, 1), 3, 2)
+        textbox = rec(0xF00D, rec(4008, b"Ellipse", 0))
+        anchor = rec(0xF010, struct.pack("<4h", 100, 100, 600, 600), 0)
+        presentation = extract_presentation(rec(1000, rec(1006, rec(
+            0xF004, ellipse + options + anchor + textbox
+        ))))
+        box = presentation.slides[0].text_boxes[0]
+        self.assertEqual(box.preset, "ellipse")
+        self.assertEqual(box.vertical_anchor, "ctr")
+        self.assertFalse(box.auto_fit)
+        self.assertFalse(box.wrap_text)
+
+    def test_reads_both_legacy_text_autofit_modes(self):
+        def shape(text: bytes, top: int, flags: int):
+            options = rec(0xF00B, struct.pack("<HI", 191, flags), 3, 1)
+            textbox = rec(0xF00D, rec(4008, text, 0))
+            anchor = rec(0xF010, struct.pack("<4h", top, 100, top + 300, 600), 0)
+            return rec(0xF004, options + anchor + textbox)
+
+        presentation = extract_presentation(rec(1000, rec(
+            1006,
+            shape(b"Shrink text", 100, 0x40004)
+            + shape(b"Grow shape", 500, 0xF0002),
+        )))
+        shrink, grow = presentation.slides[0].text_boxes
+        self.assertTrue(shrink.auto_fit)
+        self.assertFalse(shrink.fit_shape_to_text)
+        self.assertFalse(grow.auto_fit)
+        self.assertTrue(grow.fit_shape_to_text)
+
+    def test_keeps_packed_vertex_header_out_of_following_segments(self):
+        vertices = (
+            struct.pack("<3H", 3, 3, 0xFFF0)
+            + struct.pack("<6h", 0, 100, 50, 0, 100, 100)
+        )
+        segments = (
+            struct.pack("<3H", 4, 4, 2)
+            + struct.pack("<4H", 0x4000, 0x0001, 0x0001, 0x8000)
+        )
+        entries = struct.pack("<HIHI", 0xC145, 12, 0xC146, len(segments))
+        fopt = next(records(rec(0xF00B, entries + vertices + segments, 3, 2)))
+        complex_properties = _fopt_complex_properties(fopt)
+
+        self.assertEqual(len(complex_properties[325]), 18)
+        self.assertEqual(complex_properties[326][:6], struct.pack("<3H", 4, 4, 2))
+        path, width, height = _freeform_path(
+            _fopt_properties(fopt), complex_properties
+        )
+        self.assertEqual(path, (("M", (0, 100)), ("L", (50, 0)), ("L", (100, 100))))
+        self.assertEqual((width, height), (100, 100))
 
     def test_ignores_trailing_garbage_after_valid_records(self):
         text = rec(4000, "OK".encode("utf-16le"), 0)

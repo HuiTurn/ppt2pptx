@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import math
 import struct
 import zlib
 
@@ -33,6 +34,17 @@ RT_ROUNDTRIP_OPAQUE_MAX = 1064
 CONTAINER_VERSION = 0xF
 DEFAULT_SLIDE_WIDTH = 5760
 DEFAULT_SLIDE_HEIGHT = 4320
+SHAPE_PRESETS = {
+    1: "rect", 2: "roundRect", 3: "ellipse", 4: "diamond",
+    5: "triangle", 6: "rtTriangle", 7: "parallelogram", 8: "trapezoid",
+    9: "hexagon", 10: "octagon", 11: "plus", 12: "star5", 13: "rightArrow",
+    19: "arc", 20: "line",
+    32: "rightArrow", 33: "leftArrow", 34: "upArrow", 35: "downArrow",
+    56: "pentagon", 57: "hexagon", 58: "heptagon", 59: "octagon",
+    66: "star4", 67: "star5", 68: "star6", 69: "star8", 70: "star16",
+    84: "heart", 87: "lightningBolt", 88: "sun", 89: "moon",
+    125: "diamond", 183: "ellipse",
+}
 
 @dataclass(frozen=True, slots=True)
 class Record:
@@ -54,6 +66,13 @@ class TextBox:
     fill_color: str | None = None
     line_color: str | None = None
     line_dash: str | None = None
+    paragraph_levels: tuple[int, ...] = ()
+    paragraph_bullet_chars: tuple[str | None, ...] = ()
+    auto_fit: bool = False
+    fit_shape_to_text: bool = False
+    vertical_anchor: str | None = None
+    preset: str = "rect"
+    wrap_text: bool = True
 
 @dataclass(frozen=True, slots=True)
 class TextRun:
@@ -72,12 +91,16 @@ class TextContent:
     runs: tuple[TextRun, ...] = ()
     paragraph_alignments: tuple[str | None, ...] = ()
     paragraph_bullets: tuple[bool, ...] = ()
+    paragraph_levels: tuple[int, ...] = ()
+    paragraph_bullet_chars: tuple[str | None, ...] = ()
+    text_type: int = 4
 
 @dataclass(frozen=True, slots=True)
 class _MasterStyle:
     run: TextRun
     alignment: str | None
     bullet: bool | None
+    bullet_char: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class Picture:
@@ -237,31 +260,36 @@ def _text(record: Record) -> str | None:
         return record.payload.decode("cp1252", "replace").rstrip("\x00")
     return None
 
-def _skip_paragraph_properties(payload: bytes, position: int, mask: int) -> tuple[int, str | None, bool | None]:
+def _skip_paragraph_properties(payload: bytes, position: int, mask: int) -> tuple[int, str | None, bool | None, str | None]:
     alignment: str | None = None
     bullet: bool | None = None
+    bullet_char: str | None = None
     fixed = ((0xF, 2), (0x80, 2), (0x10, 2), (0x40, 2), (0x20, 4),
              (0x800, 2), (0x1000, 2), (0x2000, 2), (0x4000, 2),
              (0x100, 2), (0x400, 2), (0x8000, 2))
     for property_mask, size in fixed:
         if mask & property_mask:
             if position + size > len(payload):
-                return len(payload), alignment, bullet
-            value = int.from_bytes(payload[position:position + size], "little", signed=size == 2)
+                return len(payload), alignment, bullet, bullet_char
+            raw = payload[position:position + size]
+            value = int.from_bytes(raw, "little", signed=size == 2)
             if property_mask == 0xF:
                 bullet = bool(value & 1)
+            elif property_mask == 0x80:
+                codepoint = int.from_bytes(raw, "little")
+                bullet_char = chr(codepoint) if codepoint else None
             elif property_mask == 0x800:
                 alignment = {0: "l", 1: "ctr", 2: "r", 3: "just", 4: "dist"}.get(value)
             position += size
     if mask & 0x100000:
         if position + 2 > len(payload):
-            return len(payload), alignment, bullet
+            return len(payload), alignment, bullet, bullet_char
         count = struct.unpack_from("<H", payload, position)[0]
         position += min(2 + count * 4, len(payload) - position)
     for property_mask in (0x10000, 0xE0000, 0x200000):
         if mask & property_mask:
             position = min(position + 2, len(payload))
-    return position, alignment, bullet
+    return position, alignment, bullet, bullet_char
 
 def _text_color(value: int, scheme: tuple[str, ...]) -> str | None:
     high = value >> 24
@@ -313,19 +341,36 @@ def _merge_style(value: str, explicit: TextRun, master: TextRun | None) -> TextR
                    explicit.typeface or master.typeface,
                    explicit.hyperlink)
 
-def _style_text(text: str, payload: bytes, fonts: tuple[str, ...], master: _MasterStyle | None, scheme: tuple[str, ...]) -> TextContent:
+def _master_at_level(masters: tuple[_MasterStyle, ...], level: int) -> _MasterStyle | None:
+    if not masters:
+        return None
+    effective = masters[0]
+    for current in masters[1:min(level, len(masters) - 1) + 1]:
+        effective = _MasterStyle(
+            _merge_style("", current.run, effective.run),
+            current.alignment if current.alignment is not None else effective.alignment,
+            current.bullet if current.bullet is not None else effective.bullet,
+            current.bullet_char or effective.bullet_char,
+        )
+    return effective
+
+def _style_text(text: str, payload: bytes, fonts: tuple[str, ...],
+                masters: tuple[_MasterStyle, ...], scheme: tuple[str, ...],
+                text_type: int) -> TextContent:
     position = handled = 0
-    paragraph_runs: list[tuple[int, int, str | None, bool | None]] = []
+    paragraph_runs: list[tuple[int, int, int, str | None, bool | None, str | None]] = []
     while position + 10 <= len(payload) and handled < len(text) + 1:
         count = struct.unpack_from("<I", payload, position)[0]
-        _indent = struct.unpack_from("<h", payload, position + 4)[0]
+        level = max(0, min(4, struct.unpack_from("<h", payload, position + 4)[0]))
         mask = struct.unpack_from("<I", payload, position + 6)[0]
-        position, alignment, bullet = _skip_paragraph_properties(payload, position + 10, mask)
+        position, alignment, bullet, bullet_char = _skip_paragraph_properties(
+            payload, position + 10, mask
+        )
         if not count:
             break
-        paragraph_runs.append((handled, handled + count, alignment, bullet))
+        paragraph_runs.append((handled, handled + count, level, alignment, bullet, bullet_char))
         handled += count
-    character_runs: list[TextRun] = []
+    character_runs: list[tuple[int, int, TextRun]] = []
     handled = 0
     while position + 8 <= len(payload) and handled < len(text) + 1:
         count, mask = struct.unpack_from("<II", payload, position)
@@ -335,19 +380,41 @@ def _style_text(text: str, payload: bytes, fonts: tuple[str, ...], master: _Mast
         position, explicit = _character_style(payload, position, mask, fonts, scheme)
         end = min(handled + count, len(text))
         if end > handled:
-            character_runs.append(_merge_style(text[handled:end], explicit, master.run if master else None))
+            character_runs.append((handled, end, explicit))
         handled += count
-    if handled < len(text):
-        character_runs.append(_merge_style(text[handled:], TextRun(""), master.run if master else None))
+
+    boundaries = {0, len(text)}
+    for start, end, *_rest in paragraph_runs:
+        boundaries.update((max(0, min(len(text), start)), max(0, min(len(text), end))))
+    for start, end, _run in character_runs:
+        boundaries.update((start, end))
+    ordered = sorted(boundaries)
+    styled_runs: list[TextRun] = []
+    for start, end in zip(ordered, ordered[1:]):
+        if end <= start:
+            continue
+        paragraph_style = next((run for run in paragraph_runs if run[0] <= start < run[1]), None)
+        level = paragraph_style[2] if paragraph_style else 0
+        master = _master_at_level(masters, level)
+        explicit = next((run for left, right, run in character_runs if left <= start < right), TextRun(""))
+        styled_runs.append(_merge_style(text[start:end], explicit, master.run if master else None))
+
     alignments: list[str | None] = []
     bullets: list[bool] = []
+    levels: list[int] = []
+    bullet_chars: list[str | None] = []
     paragraph_start = 0
     for paragraph in text.split("\r"):
         style = next((run for run in paragraph_runs if run[0] <= paragraph_start < run[1]), None)
-        alignments.append(style[2] if style and style[2] is not None else master.alignment if master else None)
-        bullets.append(style[3] if style and style[3] is not None else bool(master.bullet) if master else False)
+        level = style[2] if style else 0
+        master = _master_at_level(masters, level)
+        alignments.append(style[3] if style and style[3] is not None else master.alignment if master else None)
+        bullets.append(style[4] if style and style[4] is not None else bool(master.bullet) if master else False)
+        levels.append(level)
+        bullet_chars.append(style[5] if style and style[5] is not None else master.bullet_char if master else None)
         paragraph_start += len(paragraph) + 1
-    return TextContent(text, tuple(character_runs), tuple(alignments), tuple(bullets))
+    return TextContent(text, tuple(styled_runs), tuple(alignments), tuple(bullets),
+                       tuple(levels), tuple(bullet_chars), text_type)
 
 def _apply_hyperlinks(content: TextContent, spans: list[tuple[int, int, str]]) -> TextContent:
     if not spans:
@@ -363,10 +430,12 @@ def _apply_hyperlinks(content: TextContent, spans: list[tuple[int, int, str]]) -
         for left, right in zip(ordered, ordered[1:]):
             value = run.text[left - offset:right - offset]
             url = next((target for start, end, target in spans if start <= left < end), None)
-            output.append(TextRun(value, run.bold, run.italic, run.underline,
+            output.append(TextRun(value, run.bold, run.italic, True if url else run.underline,
                                   run.font_size, run.color, run.typeface, url))
         offset += len(run.text)
-    return TextContent(content.text, tuple(output), content.paragraph_alignments, content.paragraph_bullets)
+    return TextContent(content.text, tuple(output), content.paragraph_alignments,
+                       content.paragraph_bullets, content.paragraph_levels,
+                       content.paragraph_bullet_chars, content.text_type)
 
 def _text_contents(source_records: list[Record], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...]) -> list[TextContent]:
     result: list[TextContent] = []
@@ -385,12 +454,15 @@ def _text_contents(source_records: list[Record], fonts: tuple[str, ...], masters
         master = masters.get(text_type, ())
         base = master[0] if master else None
         if style is not None and style.type == 4001:
-            content = _style_text(value, style.payload, fonts, base, scheme)
+            content = _style_text(value, style.payload, fonts, master, scheme, text_type)
         else:
             paragraphs = value.split("\r")
             content = TextContent(value, (_merge_style(value, TextRun(""), base.run if base else None),),
                                   tuple(base.alignment if base else None for _ in paragraphs),
-                                  tuple(bool(base.bullet) if base else False for _ in paragraphs))
+                                  tuple(bool(base.bullet) if base else False for _ in paragraphs),
+                                  tuple(0 for _ in paragraphs),
+                                  tuple(base.bullet_char if base else None for _ in paragraphs),
+                                  text_type)
         spans: list[tuple[int, int, str]] = []
         pending_id: int | None = None
         for candidate in related:
@@ -431,12 +503,14 @@ def _master_text_styles(powerpoint_document: bytes, document: Record, fonts: tup
             if position + 4 > len(atom.payload):
                 break
             paragraph_mask = struct.unpack_from("<I", atom.payload, position)[0]
-            position, alignment, bullet = _skip_paragraph_properties(atom.payload, position + 4, paragraph_mask)
+            position, alignment, bullet, bullet_char = _skip_paragraph_properties(
+                atom.payload, position + 4, paragraph_mask
+            )
             if position + 4 > len(atom.payload):
                 break
             character_mask = struct.unpack_from("<I", atom.payload, position)[0]
             position, run = _character_style(atom.payload, position + 4, character_mask, fonts, scheme)
-            styles.append(_MasterStyle(run, alignment, bullet))
+            styles.append(_MasterStyle(run, alignment, bullet, bullet_char))
         if styles:
             result[atom.instance] = tuple(styles)
     for child_type, parent_type in ((5, 1), (6, 0), (7, 1), (8, 1)):
@@ -450,6 +524,7 @@ def _master_text_styles(powerpoint_document: bytes, document: Record, fonts: tup
                 _merge_style("", child_style.run, parent_style.run),
                 child_style.alignment if child_style.alignment is not None else parent_style.alignment,
                 child_style.bullet if child_style.bullet is not None else parent_style.bullet,
+                child_style.bullet_char or parent_style.bullet_char,
             ))
         result[child_type] = tuple(merged)
     return result
@@ -485,6 +560,14 @@ class _GroupSpace:
     abs_top: int
     abs_right: int
     abs_bottom: int
+    a: float | None = None
+    b: float = 0.0
+    c: float = 0.0
+    d: float | None = None
+    tx: float = 0.0
+    ty: float = 0.0
+    flip_horizontal: bool = False
+    flip_vertical: bool = False
 
 def _client_rect(payload: bytes) -> tuple[int, int, int, int] | None:
     if len(payload) < 8:
@@ -495,19 +578,67 @@ def _client_rect(payload: bytes) -> tuple[int, int, int, int] | None:
 def _child_rect(payload: bytes) -> tuple[int, int, int, int] | None:
     if len(payload) < 16:
         return None
-    left, top, right, bottom = struct.unpack_from("<4i", payload)
-    if max(abs(left), abs(top), abs(right), abs(bottom)) > 100_000:
-        left, top, right, bottom = (round(value * 576 / 914400)
-                                    for value in (left, top, right, bottom))
-    return left, top, right, bottom
+    return struct.unpack_from("<4i", payload)
 
-def _map_group_point(x: int, y: int, space: _GroupSpace) -> tuple[float, float]:
+def _space_matrix(space: _GroupSpace) -> tuple[float, float, float, float, float, float]:
+    if space.a is not None and space.d is not None:
+        return space.a, space.b, space.c, space.d, space.tx, space.ty
     coord_width = max(1, space.coord_right - space.coord_left)
     coord_height = max(1, space.coord_bottom - space.coord_top)
-    abs_width = space.abs_right - space.abs_left
-    abs_height = space.abs_bottom - space.abs_top
-    return (space.abs_left + (x - space.coord_left) * abs_width / coord_width,
-            space.abs_top + (y - space.coord_top) * abs_height / coord_height)
+    scale_x = (space.abs_right - space.abs_left) / coord_width
+    scale_y = (space.abs_bottom - space.abs_top) / coord_height
+    return (scale_x, 0.0, 0.0, scale_y,
+            space.abs_left - scale_x * space.coord_left,
+            space.abs_top - scale_y * space.coord_top)
+
+def _compose_matrix(parent: tuple[float, float, float, float, float, float],
+                    child: tuple[float, float, float, float, float, float]
+                    ) -> tuple[float, float, float, float, float, float]:
+    pa, pb, pc, pd, ptx, pty = parent
+    ca, cb, cc, cd, ctx, cty = child
+    return (pa * ca + pc * cb, pb * ca + pd * cb,
+            pa * cc + pc * cd, pb * cc + pd * cd,
+            pa * ctx + pc * cty + ptx, pb * ctx + pd * cty + pty)
+
+def _transform_box(rect: tuple[int, int, int, int],
+                   matrix: tuple[float, float, float, float, float, float]
+                   ) -> tuple[int, int, int, int]:
+    left, top, right, bottom = rect
+    a, b, c, d, tx, ty = matrix
+    center_x, center_y = (left + right) / 2, (top + bottom) / 2
+    mapped_x = a * center_x + c * center_y + tx
+    mapped_y = b * center_x + d * center_y + ty
+    width = max(1, round(math.hypot(a, b) * abs(right - left)))
+    height = max(1, round(math.hypot(c, d) * abs(bottom - top)))
+    return (round(mapped_x - width / 2), round(mapped_y - height / 2), width, height)
+
+def _transform_box_in_space(rect: tuple[int, int, int, int],
+                            space: _GroupSpace) -> tuple[int, int, int, int]:
+    matrix = _space_matrix(space)
+    a, b, c, d, tx, ty = matrix
+    scale_x, scale_y = math.hypot(a, b), math.hypot(c, d)
+    smaller = min(scale_x, scale_y)
+    # A rotated nested group can encode a very anisotropic intermediate anchor
+    # even though its children retain their aspect ratio.  PowerPoint resolves
+    # that case with the area-preserving (determinant) scale around the group
+    # center; applying the two raw axis scales produces tall, misplaced slivers.
+    if smaller > 0 and max(scale_x, scale_y) / smaller > 4 and (abs(b) > 1e-12 or abs(c) > 1e-12):
+        left, top, right, bottom = rect
+        coord_center_x = (space.coord_left + space.coord_right) / 2
+        coord_center_y = (space.coord_top + space.coord_bottom) / 2
+        abs_center_x = a * coord_center_x + c * coord_center_y + tx
+        abs_center_y = b * coord_center_x + d * coord_center_y + ty
+        rect_center_x, rect_center_y = (left + right) / 2, (top + bottom) / 2
+        scale = math.sqrt(abs(a * d - b * c))
+        angle = math.atan2(b, a)
+        delta_x = (rect_center_x - coord_center_x) * scale
+        delta_y = (rect_center_y - coord_center_y) * scale
+        mapped_x = abs_center_x + math.cos(angle) * delta_x - math.sin(angle) * delta_y
+        mapped_y = abs_center_y + math.sin(angle) * delta_x + math.cos(angle) * delta_y
+        width = max(1, round(abs(right - left) * scale))
+        height = max(1, round(abs(bottom - top) * scale))
+        return (round(mapped_x - width / 2), round(mapped_y - height / 2), width, height)
+    return _transform_box(rect, matrix)
 
 def _rect_to_box(left: int, top: int, right: int, bottom: int) -> tuple[int, int, int, int]:
     return left, top, max(1, right - left), max(1, bottom - top)
@@ -524,9 +655,10 @@ def _anchor(children: list[Record], fallback_index: int, space: _GroupSpace | No
         if rect is not None:
             left, top, right, bottom = rect
             if space is not None:
-                abs_left, abs_top = _map_group_point(left, top, space)
-                abs_right, abs_bottom = _map_group_point(right, bottom, space)
-                return _rect_to_box(round(abs_left), round(abs_top), round(abs_right), round(abs_bottom))
+                return _transform_box_in_space(rect, space)
+            if max(abs(left), abs(top), abs(right), abs(bottom)) > 100_000:
+                left, top, right, bottom = (round(value * 576 / 914400)
+                                            for value in (left, top, right, bottom))
             return _rect_to_box(left, top, right, bottom)
     return 288, 288 + fallback_index * 576, 5184, 432
 
@@ -540,9 +672,60 @@ def _group_space(group_shape: Record, parent: _GroupSpace | None) -> _GroupSpace
         return parent
     if max(abs(coord_left), abs(coord_top), abs(coord_right), abs(coord_bottom)) > 10_000_000:
         return parent
-    left, top, width, height = _anchor(children, 0, parent)
+    client = next((child for child in children if child.type == RT_OFFICEART_CLIENT_ANCHOR), None)
+    child_anchor = next((child for child in children if child.type == RT_OFFICEART_CHILD_ANCHOR), None)
+    rect = _client_rect(client.payload) if client is not None else (
+        _child_rect(child_anchor.payload) if child_anchor is not None else None
+    )
+    if rect is None:
+        return parent
+    left, top, right, bottom = rect
+    if parent is None and child_anchor is not None and max(map(abs, rect)) > 100_000:
+        left, top, right, bottom = (round(value * 576 / 914400) for value in rect)
+    coord_width = coord_right - coord_left
+    coord_height = coord_bottom - coord_top
+    scale_x = (right - left) / coord_width
+    scale_y = (bottom - top) / coord_height
+    fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
+    properties = _fopt_properties(fopt) if fopt else {}
+    rotation, flip_horizontal, flip_vertical = _transform(children, properties)
+    if flip_horizontal:
+        base_a, base_tx = -scale_x, right + scale_x * coord_left
+    else:
+        base_a, base_tx = scale_x, left - scale_x * coord_left
+    if flip_vertical:
+        base_d, base_ty = -scale_y, bottom + scale_y * coord_top
+    else:
+        base_d, base_ty = scale_y, top - scale_y * coord_top
+    angle = math.radians(rotation / 60000)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    center_x, center_y = (left + right) / 2, (top + bottom) / 2
+    own = (
+        cosine * base_a, sine * base_a,
+        -sine * base_d, cosine * base_d,
+        cosine * (base_tx - center_x) - sine * (base_ty - center_y) + center_x,
+        sine * (base_tx - center_x) + cosine * (base_ty - center_y) + center_y,
+    )
+    matrix = _compose_matrix(_space_matrix(parent), own) if parent is not None else own
+    abs_left, abs_top, width, height = _transform_box(
+        (coord_left, coord_top, coord_right, coord_bottom), matrix
+    )
     return _GroupSpace(coord_left, coord_top, coord_right, coord_bottom,
-                       left, top, left + width, top + height)
+                       abs_left, abs_top, abs_left + width, abs_top + height,
+                       *matrix,
+                       (parent.flip_horizontal if parent else False) ^ flip_horizontal,
+                       (parent.flip_vertical if parent else False) ^ flip_vertical)
+
+def _combine_transform(transform: tuple[int, bool, bool],
+                       space: _GroupSpace | None) -> tuple[int, bool, bool]:
+    if space is None:
+        return transform
+    rotation, flip_horizontal, flip_vertical = transform
+    a, b, _c, _d, _tx, _ty = _space_matrix(space)
+    group_rotation = round(math.degrees(math.atan2(b, a)) * 60000)
+    return (rotation + group_rotation,
+            flip_horizontal ^ space.flip_horizontal,
+            flip_vertical ^ space.flip_vertical)
 
 def _iter_sp_containers(record: Record, space: _GroupSpace | None = None):
     """Yield (OfficeArtSpContainer, group space) with nested group transforms applied."""
@@ -585,7 +768,8 @@ def _is_background_shape(children: list[Record]) -> bool:
 def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...], *, skip_placeholders: bool = False) -> list[TextBox]:
     result: list[TextBox] = []
     for shape, space in _iter_sp_containers(slide):
-        if skip_placeholders and _is_placeholder(shape):
+        is_placeholder = _is_placeholder(shape)
+        if skip_placeholders and is_placeholder:
             continue
         children = _direct_children(shape)
         textbox = next((child for child in children if child.type == RT_OFFICEART_CLIENT_TEXTBOX), None)
@@ -605,10 +789,29 @@ def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tu
         fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
         properties = _fopt_properties(fopt) if fopt else {}
         fill, line, dash = _shape_style(properties, scheme)
-        transform = _transform(children, properties)
+        transform = _combine_transform(_transform(children, properties), space)
+        sp = next((child for child in children if child.type == 0xF00A), None)
+        preset = SHAPE_PRESETS.get(sp.instance, "rect") if sp is not None else "rect"
+        text_anchor = properties.get(135, 0)
+        vertical_anchor = (
+            "ctr" if text_anchor in (1, 4)
+            else "b" if text_anchor in (2, 5)
+            else None
+        )
+        text_flags = properties.get(191, 0)
+        auto_fit = (
+            (is_placeholder and content.text_type in (1, 5, 7, 8))
+            or bool(text_flags & 0x40000 and text_flags & 0x4)
+        )
+        fit_shape_to_text = bool(text_flags & 0x20000 and text_flags & 0x2)
         result.append(TextBox(content.text, left, top, width, height, content.runs,
                               content.paragraph_alignments, content.paragraph_bullets,
-                              *transform, fill, line, dash))
+                              *transform, fill, line, dash,
+                              content.paragraph_levels, content.paragraph_bullet_chars,
+                              auto_fit, fit_shape_to_text,
+                              vertical_anchor,
+                              preset,
+                              properties.get(133, 0) != 2))
     return result
 
 def _fopt_properties(record: Record) -> dict[int, int]:
@@ -629,8 +832,21 @@ def _fopt_complex_properties(record: Record) -> dict[int, bytes]:
     cursor = count * 6
     result: dict[int, bytes] = {}
     for pid, size in ordered:
-        result[pid] = record.payload[cursor:cursor + size]
-        cursor += size
+        actual_size = size
+        # OfficeArt pVertices uses a packed-array header whose six bytes are
+        # not included in the FOPTE size.  Without accounting for it, the
+        # following pSegmentInfo starts six bytes early, drops the final
+        # vertices, and can accidentally close an otherwise open path.
+        if pid == 325 and cursor + 6 <= len(record.payload):
+            item_count, _allocated, item_size = struct.unpack_from(
+                "<3H", record.payload, cursor
+            )
+            element_size = 4 if item_size in (0, 0xFFF0) else item_size
+            packed_size = item_count * element_size
+            if size == packed_size and cursor + size + 6 <= len(record.payload):
+                actual_size += 6
+        result[pid] = record.payload[cursor:cursor + actual_size]
+        cursor += actual_size
     return result
 
 def _has_fill(properties: dict[int, int]) -> bool:
@@ -640,7 +856,7 @@ def _has_fill(properties: dict[int, int]) -> bool:
     return bool(flags & 0x10)
 
 def _has_line(properties: dict[int, int]) -> bool:
-    flags = properties.get(459)
+    flags = properties.get(511)
     if flags is None:
         return 448 in properties
     return bool(flags & 0x8)
@@ -753,15 +969,6 @@ def _office_color(value: int | None, scheme: tuple[str, ...] = ()) -> str | None
     return f"{red:02X}{green:02X}{blue:02X}"
 
 def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], scheme: tuple[str, ...]) -> list[BasicShape]:
-    presets = {1: "rect", 2: "roundRect", 3: "ellipse", 4: "diamond",
-               5: "triangle", 6: "rtTriangle", 7: "parallelogram", 8: "trapezoid",
-               9: "hexagon", 10: "octagon", 11: "plus", 12: "star5", 13: "arrow",
-               19: "arc", 20: "line",
-               32: "rightArrow", 33: "leftArrow", 34: "upArrow", 35: "downArrow",
-               56: "pentagon", 57: "hexagon", 58: "heptagon", 59: "octagon",
-               66: "star4", 67: "star5", 68: "star6", 69: "star8", 70: "star16",
-               84: "heart", 87: "lightningBolt", 88: "sun", 89: "moon",
-               125: "diamond", 183: "ellipse"}
     result: list[BasicShape] = []
     for shape, space in _iter_sp_containers(slide):
         children = _direct_children(shape)
@@ -801,7 +1008,7 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
                 continue
             preset = "custom"
         else:
-            preset = presets.get(sp.instance)
+            preset = SHAPE_PRESETS.get(sp.instance)
             if preset is None and path is None:
                 continue
             if path is not None:
@@ -812,7 +1019,7 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
             continue
         left, top, width, height = _anchor(children, len(result), space)
         result.append(BasicShape(preset, left, top, width, height, fill, line,
-                                 *_transform(children, properties), dash,
+                                 *_combine_transform(_transform(children, properties), space), dash,
                                  path, path_width or 21600, path_height or 21600))
     return result
 
@@ -947,7 +1154,7 @@ def _shape_pictures(slide: Record, image_map: dict[int, tuple[bytes, str, str]])
             return round(signed / 65536 * 100000)
         result.append(Picture(data, extension, content_type, left, top, width, height,
                               crop(258), crop(256), crop(259), crop(257),
-                              *_transform(children, properties)))
+                              *_combine_transform(_transform(children, properties), space)))
     return result
 
 def _presentation_size(document: Record) -> tuple[int, int]:
