@@ -56,6 +56,41 @@ def _xfrm_attributes(rotation: int, flip_horizontal: bool, flip_vertical: bool) 
     if flip_vertical: values.append('flipV="1"')
     return (" " + " ".join(values)) if values else ""
 
+def _fill_xml(color: str | None) -> str:
+    return f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>' if color else '<a:noFill/>'
+
+def _line_xml(color: str | None, dash: str | None = None) -> str:
+    if not color:
+        return '<a:ln><a:noFill/></a:ln>'
+    dash_xml = f'<a:prstDash val="{dash}"/>' if dash else ''
+    return f'<a:ln><a:solidFill><a:srgbClr val="{color}"/></a:solidFill>{dash_xml}</a:ln>'
+
+def _path_xml(shape: BasicShape) -> str:
+    if not shape.path:
+        return f'<a:prstGeom prst="{shape.preset}"><a:avLst/></a:prstGeom>'
+    commands: list[str] = []
+    for item in shape.path:
+        kind = item[0]
+        if kind == "M":
+            x, y = item[1]
+            commands.append(f'<a:moveTo><a:pt x="{x}" y="{y}"/></a:moveTo>')
+        elif kind == "L":
+            x, y = item[1]
+            commands.append(f'<a:lnTo><a:pt x="{x}" y="{y}"/></a:lnTo>')
+        elif kind == "C":
+            (x1, y1), (x2, y2), (x3, y3) = item[1], item[2], item[3]
+            commands.append(
+                f'<a:cubicBezTo><a:pt x="{x1}" y="{y1}"/><a:pt x="{x2}" y="{y2}"/><a:pt x="{x3}" y="{y3}"/></a:cubicBezTo>'
+            )
+        elif kind == "Z":
+            commands.append('<a:close/>')
+    return (
+        f'<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/>'
+        f'<a:rect l="l" t="t" r="r" b="b"/>'
+        f'<a:pathLst><a:path w="{shape.path_width}" h="{shape.path_height}">'
+        f'{"".join(commands)}</a:path></a:pathLst></a:custGeom>'
+    )
+
 def _field_shape(shape_id: int, name: str, left: int, top: int, width: int, height: int,
                  value: str, alignment: str, field_type: str | None = None) -> str:
     if field_type:
@@ -88,14 +123,16 @@ def _header_footer_shapes(value: HeaderFooter | None, slide_width: int, slide_he
 def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, hidden: bool) -> str:
     drawing_shapes = []
     for index, shape in enumerate(basic_shapes, 2):
-        fill = f'<a:solidFill><a:srgbClr val="{shape.fill_color}"/></a:solidFill>' if shape.fill_color else '<a:noFill/>'
-        line = (f'<a:ln><a:solidFill><a:srgbClr val="{shape.line_color}"/></a:solidFill></a:ln>'
-                if shape.line_color else '<a:ln><a:noFill/></a:ln>')
-        drawing_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="{shape.preset} {index}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(shape.rotation, shape.flip_horizontal, shape.flip_vertical)}><a:off x="{_emu(shape.left)}" y="{_emu(shape.top)}"/><a:ext cx="{_emu(shape.width)}" cy="{_emu(shape.height)}"/></a:xfrm><a:prstGeom prst="{shape.preset}"><a:avLst/></a:prstGeom>{fill}{line}</p:spPr></p:sp>')
+        fill = _fill_xml(shape.fill_color)
+        line = _line_xml(shape.line_color, shape.line_dash)
+        geom = _path_xml(shape)
+        drawing_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="{shape.preset} {index}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(shape.rotation, shape.flip_horizontal, shape.flip_vertical)}><a:off x="{_emu(shape.left)}" y="{_emu(shape.top)}"/><a:ext cx="{_emu(shape.width)}" cy="{_emu(shape.height)}"/></a:xfrm>{geom}{fill}{line}</p:spPr></p:sp>')
     text_shapes = []
     for index, box in enumerate(parts, len(basic_shapes) + 2):
         paragraphs = _paragraphs(box, hyperlink_ids)
-        text_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="Text Box {index-1}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(box.rotation, box.flip_horizontal, box.flip_vertical)}><a:off x="{_emu(box.left)}" y="{_emu(box.top)}"/><a:ext cx="{_emu(box.width)}" cy="{_emu(box.height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>{paragraphs}</p:txBody></p:sp>')
+        fill = _fill_xml(box.fill_color)
+        line = _line_xml(box.line_color, box.line_dash)
+        text_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="Text Box {index-1}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(box.rotation, box.flip_horizontal, box.flip_vertical)}><a:off x="{_emu(box.left)}" y="{_emu(box.top)}"/><a:ext cx="{_emu(box.width)}" cy="{_emu(box.height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{fill}{line}</p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>{paragraphs}</p:txBody></p:sp>')
     footer_shapes = _header_footer_shapes(header_footer, slide_width, slide_height, slide_number,
                                           len(basic_shapes) + len(parts) + 2)
     picture_shapes = []
@@ -103,7 +140,7 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
         crop = f'<a:srcRect l="{picture.crop_left}" t="{picture.crop_top}" r="{picture.crop_right}" b="{picture.crop_bottom}"/>' if any((picture.crop_left, picture.crop_top, picture.crop_right, picture.crop_bottom)) else ''
         picture_shapes.append(f'<p:pic><p:nvPicPr><p:cNvPr id="{index}" name="Picture {index}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{relation_id}"/>{crop}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm{_xfrm_attributes(picture.rotation, picture.flip_horizontal, picture.flip_vertical)}><a:off x="{_emu(picture.left)}" y="{_emu(picture.top)}"/><a:ext cx="{_emu(picture.width)}" cy="{_emu(picture.height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>')
     if background_color and background_color_end:
-        background = f'<p:bg><p:bgPr><a:gradFill rotWithShape="0"><a:gsLst><a:gs pos="0"><a:srgbClr val="{background_color}"/></a:gs><a:gs pos="100000"><a:srgbClr val="{background_color_end}"/></a:gs></a:gsLst><a:lin ang="0" scaled="1"/></a:gradFill><a:effectLst/></p:bgPr></p:bg>'
+        background = f'<p:bg><p:bgPr><a:gradFill rotWithShape="0"><a:gsLst><a:gs pos="0"><a:srgbClr val="{background_color}"/></a:gs><a:gs pos="100000"><a:srgbClr val="{background_color_end}"/></a:gs></a:gsLst><a:lin ang="2700000" scaled="1"/></a:gradFill><a:effectLst/></p:bgPr></p:bg>'
     else:
         background = f'<p:bg><p:bgPr><a:solidFill><a:srgbClr val="{background_color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>' if background_color else ''
     show = ' show="0"' if hidden else ''

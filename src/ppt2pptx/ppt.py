@@ -18,11 +18,18 @@ RT_TEXT_CHARS_ATOM = 4000
 RT_TEXT_BYTES_ATOM = 4008
 RT_OUTLINE_TEXT_REF_ATOM = 3998
 RT_DOCUMENT_ATOM = 1001
+RT_OFFICEART_SPGR_CONTAINER = 0xF003
 RT_OFFICEART_SP_CONTAINER = 0xF004
+RT_OFFICEART_FSPGR = 0xF009
 RT_OFFICEART_CLIENT_ANCHOR = 0xF010
+RT_OFFICEART_CHILD_ANCHOR = 0xF00F
+RT_OFFICEART_CLIENT_DATA = 0xF011
 RT_OFFICEART_CLIENT_TEXTBOX = 0xF00D
 RT_OFFICEART_BSE = 0xF007
 RT_OFFICEART_FOPT = 0xF00B
+RT_OE_PLACEHOLDER_ATOM = 3011
+RT_ROUNDTRIP_OPAQUE_MIN = 1053
+RT_ROUNDTRIP_OPAQUE_MAX = 1064
 CONTAINER_VERSION = 0xF
 DEFAULT_SLIDE_WIDTH = 5760
 DEFAULT_SLIDE_HEIGHT = 4320
@@ -44,6 +51,9 @@ class TextBox:
     rotation: int = 0
     flip_horizontal: bool = False
     flip_vertical: bool = False
+    fill_color: str | None = None
+    line_color: str | None = None
+    line_dash: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class TextRun:
@@ -98,6 +108,10 @@ class BasicShape:
     rotation: int = 0
     flip_horizontal: bool = False
     flip_vertical: bool = False
+    line_dash: str | None = None
+    path: tuple[tuple[object, ...], ...] | None = None
+    path_width: int = 21600
+    path_height: int = 21600
 
 @dataclass(frozen=True, slots=True)
 class Comment:
@@ -152,15 +166,26 @@ def records(data: bytes, start: int = 0, end: int | None = None):
     end = len(data) if end is None else end
     cursor = start
     while cursor < end:
-        if end - cursor < 8: raise InvalidPpt("PowerPoint record header is truncated")
+        # Trailing padding / truncated tails are common in real files; stop cleanly
+        # once a well-formed prefix has already been consumed.
+        if end - cursor < 8:
+            if cursor == start:
+                raise InvalidPpt("PowerPoint record header is truncated")
+            return
         version_instance, record_type, length = struct.unpack_from("<HHI", data, cursor)
         payload_start, payload_end = cursor + 8, cursor + 8 + length
-        if payload_end > end: raise InvalidPpt("PowerPoint record extends beyond its container")
+        if payload_end > end:
+            if cursor == start:
+                raise InvalidPpt("PowerPoint record extends beyond its container")
+            return
         yield Record(cursor, version_instance & 0xF, version_instance >> 4, record_type, data[payload_start:payload_end])
         cursor = payload_end
 
 def descendants(record: Record):
     if record.version != CONTAINER_VERSION: return
+    # PowerPoint 2007+ round-trip blobs embed OOXML/ZIP, not nested PPT records.
+    if RT_ROUNDTRIP_OPAQUE_MIN <= record.type <= RT_ROUNDTRIP_OPAQUE_MAX:
+        return
     for child in records(record.payload):
         yield child
         yield from descendants(child)
@@ -450,10 +475,117 @@ def _hyperlinks(document: Record) -> dict[int, str]:
 def _direct_children(record: Record) -> list[Record]:
     return list(records(record.payload)) if record.version == CONTAINER_VERSION else []
 
-def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...]) -> list[TextBox]:
+@dataclass(frozen=True, slots=True)
+class _GroupSpace:
+    coord_left: int
+    coord_top: int
+    coord_right: int
+    coord_bottom: int
+    abs_left: int
+    abs_top: int
+    abs_right: int
+    abs_bottom: int
+
+def _client_rect(payload: bytes) -> tuple[int, int, int, int] | None:
+    if len(payload) < 8:
+        return None
+    top, left, right, bottom = struct.unpack_from("<4h", payload)
+    return left, top, right, bottom
+
+def _child_rect(payload: bytes) -> tuple[int, int, int, int] | None:
+    if len(payload) < 16:
+        return None
+    left, top, right, bottom = struct.unpack_from("<4i", payload)
+    if max(abs(left), abs(top), abs(right), abs(bottom)) > 100_000:
+        left, top, right, bottom = (round(value * 576 / 914400)
+                                    for value in (left, top, right, bottom))
+    return left, top, right, bottom
+
+def _map_group_point(x: int, y: int, space: _GroupSpace) -> tuple[float, float]:
+    coord_width = max(1, space.coord_right - space.coord_left)
+    coord_height = max(1, space.coord_bottom - space.coord_top)
+    abs_width = space.abs_right - space.abs_left
+    abs_height = space.abs_bottom - space.abs_top
+    return (space.abs_left + (x - space.coord_left) * abs_width / coord_width,
+            space.abs_top + (y - space.coord_top) * abs_height / coord_height)
+
+def _rect_to_box(left: int, top: int, right: int, bottom: int) -> tuple[int, int, int, int]:
+    return left, top, max(1, right - left), max(1, bottom - top)
+
+def _anchor(children: list[Record], fallback_index: int, space: _GroupSpace | None = None) -> tuple[int, int, int, int]:
+    client = next((child for child in children if child.type == RT_OFFICEART_CLIENT_ANCHOR), None)
+    if client is not None:
+        rect = _client_rect(client.payload)
+        if rect is not None:
+            return _rect_to_box(*rect)
+    child_anchor = next((child for child in children if child.type == RT_OFFICEART_CHILD_ANCHOR), None)
+    if child_anchor is not None:
+        rect = _child_rect(child_anchor.payload)
+        if rect is not None:
+            left, top, right, bottom = rect
+            if space is not None:
+                abs_left, abs_top = _map_group_point(left, top, space)
+                abs_right, abs_bottom = _map_group_point(right, bottom, space)
+                return _rect_to_box(round(abs_left), round(abs_top), round(abs_right), round(abs_bottom))
+            return _rect_to_box(left, top, right, bottom)
+    return 288, 288 + fallback_index * 576, 5184, 432
+
+def _group_space(group_shape: Record, parent: _GroupSpace | None) -> _GroupSpace | None:
+    children = _direct_children(group_shape)
+    fspgr = next((child for child in children if child.type == RT_OFFICEART_FSPGR and len(child.payload) >= 16), None)
+    if fspgr is None:
+        return parent
+    coord_left, coord_top, coord_right, coord_bottom = struct.unpack_from("<4i", fspgr.payload)
+    if coord_right <= coord_left or coord_bottom <= coord_top:
+        return parent
+    if max(abs(coord_left), abs(coord_top), abs(coord_right), abs(coord_bottom)) > 10_000_000:
+        return parent
+    left, top, width, height = _anchor(children, 0, parent)
+    return _GroupSpace(coord_left, coord_top, coord_right, coord_bottom,
+                       left, top, left + width, top + height)
+
+def _iter_sp_containers(record: Record, space: _GroupSpace | None = None):
+    """Yield (OfficeArtSpContainer, group space) with nested group transforms applied."""
+    if record.type == RT_OFFICEART_SPGR_CONTAINER and record.version == CONTAINER_VERSION:
+        children = list(records(record.payload))
+        if not children:
+            return
+        nested = _group_space(children[0], space)
+        for child in children[1:]:
+            yield from _iter_sp_containers(child, nested)
+        return
+    if record.type == RT_OFFICEART_SP_CONTAINER:
+        yield record, space
+        return
+    if record.version == CONTAINER_VERSION and not (RT_ROUNDTRIP_OPAQUE_MIN <= record.type <= RT_ROUNDTRIP_OPAQUE_MAX):
+        for child in records(record.payload):
+            yield from _iter_sp_containers(child, space)
+
+def _is_placeholder(shape: Record) -> bool:
+    for child in _direct_children(shape):
+        if child.type != RT_OFFICEART_CLIENT_DATA:
+            continue
+        try:
+            for atom in records(child.payload) if child.version == CONTAINER_VERSION else ():
+                if atom.type == RT_OE_PLACEHOLDER_ATOM:
+                    return True
+            for atom in descendants(child):
+                if atom.type == RT_OE_PLACEHOLDER_ATOM:
+                    return True
+        except InvalidPpt:
+            continue
+    return False
+
+def _is_background_shape(children: list[Record]) -> bool:
+    sp = next((child for child in children if child.type == 0xF00A and len(child.payload) >= 8), None)
+    if sp is None:
+        return False
+    return bool(struct.unpack_from("<I", sp.payload, 4)[0] & 0x400)
+
+def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...], *, skip_placeholders: bool = False) -> list[TextBox]:
     result: list[TextBox] = []
-    for shape in descendants(slide):
-        if shape.type != RT_OFFICEART_SP_CONTAINER:
+    for shape, space in _iter_sp_containers(slide):
+        if skip_placeholders and _is_placeholder(shape):
             continue
         children = _direct_children(shape)
         textbox = next((child for child in children if child.type == RT_OFFICEART_CLIENT_TEXTBOX), None)
@@ -469,36 +601,15 @@ def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tu
                     content = external_text[index]
         if content is None:
             continue
-        anchor = next((child for child in children if child.type == RT_OFFICEART_CLIENT_ANCHOR), None)
-        if anchor is not None and len(anchor.payload) >= 8:
-            top, left, right, bottom = struct.unpack_from("<4h", anchor.payload)
-            width, height = max(1, right - left), max(1, bottom - top)
-        else:
-            # A deterministic cascade is preferable to overlapping all text
-            # when a producer omitted the optional client anchor.
-            left, top, width, height = 288, 288 + len(result) * 576, 5184, 432
+        left, top, width, height = _anchor(children, len(result), space)
         fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
-        transform = _transform(children, _fopt_properties(fopt) if fopt else {})
+        properties = _fopt_properties(fopt) if fopt else {}
+        fill, line, dash = _shape_style(properties, scheme)
+        transform = _transform(children, properties)
         result.append(TextBox(content.text, left, top, width, height, content.runs,
                               content.paragraph_alignments, content.paragraph_bullets,
-                              *transform))
+                              *transform, fill, line, dash))
     return result
-
-def _anchor(children: list[Record], fallback_index: int) -> tuple[int, int, int, int]:
-    anchor = next((child for child in children if child.type == RT_OFFICEART_CLIENT_ANCHOR), None)
-    if anchor is not None and len(anchor.payload) >= 8:
-        top, left, right, bottom = struct.unpack_from("<4h", anchor.payload)
-        return left, top, max(1, right - left), max(1, bottom - top)
-    child_anchor = next((child for child in children if child.type == 0xF00F), None)
-    if child_anchor is not None and len(child_anchor.payload) >= 16:
-        left, top, right, bottom = struct.unpack_from("<4i", child_anchor.payload)
-        # Some producers store child anchors in EMUs even though the enclosing
-        # PowerPoint drawing uses master units (576 units/inch).
-        if max(abs(left), abs(top), abs(right), abs(bottom)) > 100_000:
-            left, top, right, bottom = (round(value * 576 / 914400)
-                                        for value in (left, top, right, bottom))
-        return left, top, max(1, right - left), max(1, bottom - top)
-    return 288, 288 + fallback_index * 576, 5184, 432
 
 def _fopt_properties(record: Record) -> dict[int, int]:
     count = min(record.instance, len(record.payload) // 6)
@@ -507,6 +618,120 @@ def _fopt_properties(record: Record) -> dict[int, int]:
         opid, value = struct.unpack_from("<HI", record.payload, index * 6)
         properties[opid & 0x3FFF] = value
     return properties
+
+def _fopt_complex_properties(record: Record) -> dict[int, bytes]:
+    count = min(record.instance, len(record.payload) // 6)
+    ordered: list[tuple[int, int]] = []
+    for index in range(count):
+        opid, value = struct.unpack_from("<HI", record.payload, index * 6)
+        if opid & 0x8000:
+            ordered.append((opid & 0x3FFF, value))
+    cursor = count * 6
+    result: dict[int, bytes] = {}
+    for pid, size in ordered:
+        result[pid] = record.payload[cursor:cursor + size]
+        cursor += size
+    return result
+
+def _has_fill(properties: dict[int, int]) -> bool:
+    flags = properties.get(447)
+    if flags is None:
+        return 385 in properties
+    return bool(flags & 0x10)
+
+def _has_line(properties: dict[int, int]) -> bool:
+    flags = properties.get(459)
+    if flags is None:
+        return 448 in properties
+    return bool(flags & 0x8)
+
+def _line_dash(properties: dict[int, int]) -> str | None:
+    # MS-ODRAW line dashing style: 0 solid, 1/2 dashed variants, 3 dash-dot, ...
+    style = properties.get(462)
+    if style in (1, 2, 6, 7):
+        return "dash"
+    if style in (3, 5, 8):
+        return "dashDot"
+    if style == 4:
+        return "sysDash"
+    return None
+
+def _parse_imso_points(data: bytes) -> list[tuple[int, int]]:
+    if len(data) < 6:
+        return []
+    count, _alloc, cb_elem = struct.unpack_from("<3H", data)
+    if cb_elem == 0xFFF0:
+        size = 4
+    elif cb_elem == 0xFFF8:
+        size = 8
+    else:
+        size = cb_elem or 4
+    points: list[tuple[int, int]] = []
+    cursor = 6
+    for _ in range(count):
+        if cursor + size > len(data):
+            break
+        if size >= 8:
+            x, y = struct.unpack_from("<2i", data, cursor)
+        else:
+            x, y = struct.unpack_from("<2h", data, cursor)
+        points.append((x, y))
+        cursor += size
+    return points
+
+def _parse_imso_segments(data: bytes) -> list[int]:
+    if len(data) < 6:
+        return []
+    count, _alloc, cb_elem = struct.unpack_from("<3H", data)
+    size = 2 if cb_elem in (0, 0xFFF0) else (cb_elem or 2)
+    segments: list[int] = []
+    cursor = 6
+    limit = count if count else (len(data) - 6) // size
+    for _ in range(limit):
+        if cursor + 2 > len(data):
+            break
+        segments.append(struct.unpack_from("<H", data, cursor)[0])
+        cursor += size
+    return segments
+
+def _freeform_path(properties: dict[int, int], complex_props: dict[int, bytes]) -> tuple[tuple[tuple[object, ...], ...], int, int] | None:
+    points = _parse_imso_points(complex_props.get(325, b""))
+    if len(points) < 2:
+        return None
+    segments = _parse_imso_segments(complex_props.get(326, b""))
+    commands: list[tuple[object, ...]] = []
+    index = 0
+    for segment in segments:
+        command = segment >> 8
+        if command == 0x40:  # moveTo
+            if index < len(points):
+                commands.append(("M", points[index])); index += 1
+        elif command == 0x00:  # lineTo
+            if index < len(points):
+                commands.append(("L", points[index])); index += 1
+        elif command == 0x20:  # curveTo
+            if index + 2 < len(points):
+                commands.append(("C", points[index], points[index + 1], points[index + 2]))
+                index += 3
+        elif command == 0x60:  # close
+            commands.append(("Z",))
+        elif command == 0x80:  # end
+            break
+        # escapes and unknowns are skipped
+    if len(commands) < 2:
+        commands = [("M", points[0])]
+        for point in points[1:]:
+            commands.append(("L", point))
+        if len(points) >= 3:
+            commands.append(("Z",))
+    width = max(properties.get(322, 0), max((x for x, _y in points), default=0), 1)
+    height = max(properties.get(323, 0), max((y for _x, y in points), default=0), 1)
+    return tuple(commands), width, height
+
+def _shape_style(properties: dict[int, int], scheme: tuple[str, ...]) -> tuple[str | None, str | None, str | None]:
+    fill = _office_color(properties.get(385), scheme) if _has_fill(properties) else None
+    line = _office_color(properties.get(448), scheme) if _has_line(properties) else None
+    return fill, line, _line_dash(properties) if line else None
 
 def _transform(children: list[Record], properties: dict[int, int]) -> tuple[int, bool, bool]:
     rotation_raw = properties.get(4, 0)
@@ -528,32 +753,67 @@ def _office_color(value: int | None, scheme: tuple[str, ...] = ()) -> str | None
     return f"{red:02X}{green:02X}{blue:02X}"
 
 def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], scheme: tuple[str, ...]) -> list[BasicShape]:
-    presets = {0: "rect", 1: "rect", 2: "roundRect", 3: "ellipse", 4: "diamond", 19: "arc", 20: "line",
+    presets = {1: "rect", 2: "roundRect", 3: "ellipse", 4: "diamond",
+               5: "triangle", 6: "rtTriangle", 7: "parallelogram", 8: "trapezoid",
+               9: "hexagon", 10: "octagon", 11: "plus", 12: "star5", 13: "arrow",
+               19: "arc", 20: "line",
                32: "rightArrow", 33: "leftArrow", 34: "upArrow", 35: "downArrow",
-               56: "pentagon", 57: "hexagon", 58: "heptagon", 59: "octagon"}
+               56: "pentagon", 57: "hexagon", 58: "heptagon", 59: "octagon",
+               66: "star4", 67: "star5", 68: "star6", 69: "star8", 70: "star16",
+               84: "heart", 87: "lightningBolt", 88: "sun", 89: "moon",
+               125: "diamond", 183: "ellipse"}
     result: list[BasicShape] = []
-    for shape in descendants(slide):
-        if shape.type != RT_OFFICEART_SP_CONTAINER:
-            continue
+    for shape, space in _iter_sp_containers(slide):
         children = _direct_children(shape)
+        if _is_background_shape(children) or _is_placeholder(shape):
+            continue
+        # Text-bearing shapes are emitted as TextBox with their own stroke/fill.
+        textbox = next((child for child in children if child.type == RT_OFFICEART_CLIENT_TEXTBOX), None)
+        if textbox is not None:
+            has_visible_text = any(
+                child.type in (RT_TEXT_CHARS_ATOM, RT_TEXT_BYTES_ATOM, RT_OUTLINE_TEXT_REF_ATOM)
+                for child in descendants(textbox)
+            )
+            if has_visible_text:
+                continue
         sp = next((child for child in children if child.type == 0xF00A and len(child.payload) >= 8), None)
-        anchor = next((child for child in children if child.type in (RT_OFFICEART_CLIENT_ANCHOR, 0xF00F)), None)
-        if sp is None or anchor is None or len(anchor.payload) < 8:
+        has_anchor = any(child.type in (RT_OFFICEART_CLIENT_ANCHOR, RT_OFFICEART_CHILD_ANCHOR) for child in children)
+        if sp is None or not has_anchor:
+            continue
+        flags = struct.unpack_from("<I", sp.payload, 4)[0]
+        if flags & 0x1:  # group coordinator shape
             continue
         fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
-        properties = _fopt_properties(fopt) if fopt else {}
-        if 385 not in properties and 448 not in properties:
+        if fopt is None:
             continue
+        properties = _fopt_properties(fopt)
         if properties.get(260, 0) in image_map:
             continue
-        preset = presets.get(sp.instance)
-        if preset is None:
+        fill, line, dash = _shape_style(properties, scheme)
+        complex_props = _fopt_complex_properties(fopt)
+        path = path_width = path_height = None
+        if sp.instance == 0 or 325 in complex_props:
+            path_info = _freeform_path(properties, complex_props)
+            if path_info is not None:
+                path, path_width, path_height = path_info
+        if sp.instance == 0:
+            if path is None:
+                continue
+            preset = "custom"
+        else:
+            preset = presets.get(sp.instance)
+            if preset is None and path is None:
+                continue
+            if path is not None:
+                preset = "custom"
+            elif preset is None:
+                continue
+        if fill is None and line is None and path is None:
             continue
-        left, top, width, height = _anchor(children, len(result))
-        result.append(BasicShape(preset, left, top, width, height,
-                                 _office_color(properties.get(385), scheme),
-                                 _office_color(properties.get(448), scheme),
-                                 *_transform(children, properties)))
+        left, top, width, height = _anchor(children, len(result), space)
+        result.append(BasicShape(preset, left, top, width, height, fill, line,
+                                 *_transform(children, properties), dash,
+                                 path, path_width or 21600, path_height or 21600))
     return result
 
 def _background(slide: Record, scheme: tuple[str, ...]) -> tuple[str | None, str | None]:
@@ -573,7 +833,10 @@ def _background(slide: Record, scheme: tuple[str, ...]) -> tuple[str | None, str
             color = _office_color(properties.get(385), scheme)
             if color:
                 back = _office_color(properties.get(387), scheme)
-                return (back, color) if properties.get(384, 0) and back else (color, None)
+                # fillType 4+ are gradients / shades in MS-ODRAW.
+                if properties.get(384, 0) >= 4 and back:
+                    return back, color
+                return color, None
     return None, None
 
 def _comments(slide: Record) -> list[Comment]:
@@ -666,9 +929,7 @@ def _pictures(document: Record, stream: bytes | None) -> dict[int, tuple[bytes, 
 
 def _shape_pictures(slide: Record, image_map: dict[int, tuple[bytes, str, str]]) -> list[Picture]:
     result: list[Picture] = []
-    for shape in descendants(slide):
-        if shape.type != RT_OFFICEART_SP_CONTAINER:
-            continue
+    for shape, space in _iter_sp_containers(slide):
         children = _direct_children(shape)
         fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
         if fopt is None:
@@ -678,7 +939,7 @@ def _shape_pictures(slide: Record, image_map: dict[int, tuple[bytes, str, str]])
         image = image_map.get(reference or 0)
         if image is None:
             continue
-        left, top, width, height = _anchor(children, len(result))
+        left, top, width, height = _anchor(children, len(result), space)
         data, extension, content_type = image
         def crop(property_id: int) -> int:
             raw = properties.get(property_id, 0)
@@ -763,12 +1024,32 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
     background, background_end = _background(slide_record, scheme)
     if master_record is not None:
         master_background, master_background_end = _background(master_record, scheme)
-        if background is None or (background_end is None and master_background_end == background):
+        # Prefer master's explicit gradient when the slide only has a flat scheme fill.
+        if master_background_end and not background_end:
             background, background_end = master_background, master_background_end
-    # Master freeform geometry uses group-relative coordinates.  It is safer
-    # to omit those decorative shapes than to flatten them at the wrong scale;
-    # slide-owned editable shapes are retained below.
+        elif background is None:
+            background, background_end = master_background, master_background_end
+    # Flatten non-placeholder master decorations onto the slide so common
+    # template chrome survives conversion to a blank OOXML layout.
     shapes: list[BasicShape] = []
+    pictures = list(_shape_pictures(slide_record, image_map))
+    if master_record is not None:
+        for box in _shape_text_boxes(master_record, [], fonts, masters, hyperlinks, scheme,
+                                     skip_placeholders=True):
+            if box.text.strip() in ("", "*"):
+                continue
+            boxes.append(box)
+        for picture in _shape_pictures(master_record, image_map):
+            pictures.append(picture)
+        for shape in _basic_shapes(master_record, image_map, scheme):
+            left, top = max(0, shape.left), max(0, shape.top)
+            right = min(slide_width, shape.left + shape.width)
+            bottom = min(slide_height, shape.top + shape.height)
+            if right > left and bottom > top:
+                shapes.append(BasicShape(shape.preset, left, top, right - left, bottom - top,
+                                         shape.fill_color, shape.line_color, shape.rotation,
+                                         shape.flip_horizontal, shape.flip_vertical,
+                                         shape.line_dash, shape.path, shape.path_width, shape.path_height))
     for shape in _basic_shapes(slide_record, image_map, scheme):
         left, top = max(0, shape.left), max(0, shape.top)
         right = min(slide_width, shape.left + shape.width)
@@ -776,14 +1057,15 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
         if right > left and bottom > top:
             shapes.append(BasicShape(shape.preset, left, top, right - left, bottom - top,
                                      shape.fill_color, shape.line_color, shape.rotation,
-                                     shape.flip_horizontal, shape.flip_vertical))
+                                     shape.flip_horizontal, shape.flip_vertical,
+                                     shape.line_dash, shape.path, shape.path_width, shape.path_height))
     slide_show_info = next((child for child in descendants(slide_record)
                             if child.type == RT_SLIDE_SHOW_SLIDE_INFO_ATOM
                             and len(child.payload) >= 12), None)
     hidden = bool(struct.unpack_from("<H", slide_show_info.payload, 10)[0] & 0x0004) if slide_show_info else False
     return Slide(
         text_boxes=tuple(boxes),
-        pictures=tuple(_shape_pictures(slide_record, image_map)),
+        pictures=tuple(pictures),
         shapes=tuple(shapes),
         background_color=background,
         comments=tuple(_comments(slide_record)),
