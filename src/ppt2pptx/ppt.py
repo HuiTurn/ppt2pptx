@@ -165,6 +165,9 @@ class Picture:
     flip_horizontal: bool = False
     flip_vertical: bool = False
     transparent_color: str | None = None
+    line_color: str | None = None
+    line_dash: str | None = None
+    line_width: int | None = None
 
 @dataclass(frozen=True, slots=True)
 class BasicShape:
@@ -187,6 +190,7 @@ class BasicShape:
     fill_back_color: str | None = None
     line_head: tuple[str, str | None, str | None] | None = None
     line_tail: tuple[str, str | None, str | None] | None = None
+    adjustments: tuple[int, ...] = ()
 
 @dataclass(frozen=True, slots=True)
 class Comment:
@@ -216,6 +220,8 @@ class Slide:
     background_color_end: str | None = None
     notes: tuple[str, ...] = ()
     hidden: bool = False
+    background_gradient_angle: int | None = None
+    background_gradient_type: int | None = None
 
 @dataclass(frozen=True, slots=True)
 class CoreProperties:
@@ -1488,6 +1494,33 @@ def _transform(children: list[Record], properties: dict[int, int]) -> tuple[int,
     flags = struct.unpack_from("<I", sp.payload, 4)[0] if sp else 0
     return rotation, bool(flags & 0x40), bool(flags & 0x80)
 
+def _gradient_angle(properties: dict[int, int]) -> int:
+    """Translate OfficeArt's counter-clockwise, bottom-up angle to DrawingML."""
+    raw = properties.get(395, 0)
+    signed = struct.unpack("<i", struct.pack("<I", raw))[0]
+    degrees = signed / 65536
+    return round(((90 - degrees) % 360) * 60000)
+
+def _shape_adjustments(shape_type: int, properties: dict[int, int]) -> tuple[int, ...]:
+    """Normalize legacy connector bend positions to DrawingML guide values."""
+    if shape_type != 34 or 327 not in properties:
+        return ()
+    signed = struct.unpack("<i", struct.pack("<I", properties[327]))[0]
+    return (round(signed * 100000 / 21600),)
+
+def _connector_transform(
+    shape_type: int, transform: tuple[int, bool, bool]
+) -> tuple[int, bool, bool]:
+    """Preserve endpoint direction when normalizing elbow connectors."""
+    rotation, flip_horizontal, flip_vertical = transform
+    if shape_type != 34 or flip_vertical:
+        return transform
+    rotation = (rotation + 10800000) % 21600000
+    if not flip_horizontal:
+        flip_horizontal = True
+        flip_vertical = True
+    return rotation, flip_horizontal, flip_vertical
+
 def _office_color(value: int | None, scheme: tuple[str, ...] = ()) -> str | None:
     if value is None:
         return None
@@ -1558,7 +1591,10 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
         if fill is None and line is None and path is None:
             continue
         left, top, width, height = _anchor(children, len(result), space)
-        transform = _combine_transform(_transform(children, properties), space)
+        transform = _combine_transform(
+            _connector_transform(sp.instance, _transform(children, properties)),
+            space,
+        )
         result.append(BasicShape(
             preset=preset,
             left=left,
@@ -1579,10 +1615,13 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
             fill_back_color=fill_back,
             line_head=_line_end(properties, 464, 466, 467),
             line_tail=_line_end(properties, 465, 468, 469),
+            adjustments=_shape_adjustments(sp.instance, properties),
         ))
     return result
 
-def _background(slide: Record, scheme: tuple[str, ...]) -> tuple[str | None, str | None]:
+def _background(
+    slide: Record, scheme: tuple[str, ...]
+) -> tuple[str | None, str | None, int | None, int | None]:
     for shape in descendants(slide):
         if shape.type != RT_OFFICEART_SP_CONTAINER:
             continue
@@ -1600,10 +1639,11 @@ def _background(slide: Record, scheme: tuple[str, ...]) -> tuple[str | None, str
             if color:
                 back = _office_color(properties.get(387), scheme)
                 # fillType 4+ are gradients / shades in MS-ODRAW.
-                if properties.get(384, 0) >= 4 and back:
-                    return back, color
-                return color, None
-    return None, None
+                fill_type = properties.get(384, 0)
+                if fill_type >= 4 and back:
+                    return back, color, _gradient_angle(properties), fill_type
+                return color, None, None, None
+    return None, None, None, None
 
 def _comments(slide: Record) -> list[Comment]:
     result: list[Comment] = []
@@ -1683,10 +1723,12 @@ def _pictures(document: Record, stream: bytes | None) -> dict[int, tuple[bytes, 
             except zlib.error:
                 continue
             if blip.type == 0xF01B:
-                bounds = [max(-32768, min(32767, value)) for value in (left, top, right, bottom)]
-                checksum = 0xCDD7 ^ 0x9AC6 ^ bounds[0] ^ bounds[1] ^ bounds[2] ^ bounds[3] ^ 72
-                placeable = struct.pack("<IH4hHIH", 0x9AC6CDD7, 0, *bounds, 72, 0, checksum & 0xFFFF)
-                result[index] = (placeable + raw, "wmf", "image/x-wmf")
+                # OOXML embeds the standard WMF stream.  Adding an Aldus
+                # placeable header makes LibreOffice render its transparent
+                # background as an opaque white rectangle.
+                if raw.startswith(b"\xd7\xcd\xc6\x9a") and len(raw) >= 22:
+                    raw = raw[22:]
+                result[index] = (raw, "wmf", "image/x-wmf")
             elif blip.type == 0xF01A:
                 result[index] = (raw, "emf", "image/x-emf")
             else:
@@ -1716,6 +1758,7 @@ def _shape_pictures(
             signed = struct.unpack("<i", struct.pack("<I", raw))[0]
             return round(signed / 65536 * 100000)
         transform = _combine_transform(_transform(children, properties), space)
+        transparent_color = _office_color(properties.get(263), scheme)
         result.append(Picture(
             data=data,
             extension=extension,
@@ -1731,7 +1774,13 @@ def _shape_pictures(
             rotation=transform[0],
             flip_horizontal=transform[1],
             flip_vertical=transform[2],
-            transparent_color=_office_color(properties.get(263), scheme),
+            transparent_color=transparent_color,
+            line_color=(
+                (_office_color(properties.get(448), scheme) or "000000")
+                if _has_line(properties) else None
+            ),
+            line_dash=_line_dash(properties) if _has_line(properties) else None,
+            line_width=_line_width(properties, space),
         ))
     return result
 
@@ -1811,14 +1860,29 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
             TextBox(text, 288, 288 + i * 576, 5184, 432, (TextRun(text),))
             for i, text in enumerate(texts)
         ]
-    background, background_end = _background(slide_record, scheme)
+    background, background_end, background_angle, background_type = _background(
+        slide_record, scheme
+    )
     if master_record is not None:
-        master_background, master_background_end = _background(master_record, scheme)
+        (
+            master_background,
+            master_background_end,
+            master_background_angle,
+            master_background_type,
+        ) = _background(master_record, scheme)
         # Prefer master's explicit gradient when the slide only has a flat scheme fill.
         if master_background_end and not background_end:
             background, background_end = master_background, master_background_end
+            background_angle, background_type = (
+                master_background_angle,
+                master_background_type,
+            )
         elif background is None:
             background, background_end = master_background, master_background_end
+            background_angle, background_type = (
+                master_background_angle,
+                master_background_type,
+            )
     # Flatten non-placeholder master decorations onto the slide so common
     # template chrome survives conversion to a blank OOXML layout.
     master_boxes: list[TextBox] = []
@@ -1843,7 +1907,8 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                                          shape.line_dash, shape.path, shape.path_width,
                                          shape.path_height, shape.line_width,
                                          shape.fill_pattern, shape.fill_back_color,
-                                         shape.line_head, shape.line_tail))
+                                         shape.line_head, shape.line_tail,
+                                         shape.adjustments))
     for shape in _basic_shapes(slide_record, image_map, scheme):
         left, top = max(0, shape.left), max(0, shape.top)
         right = min(slide_width, shape.left + shape.width)
@@ -1855,7 +1920,8 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                                      shape.line_dash, shape.path, shape.path_width,
                                      shape.path_height, shape.line_width,
                                      shape.fill_pattern, shape.fill_back_color,
-                                     shape.line_head, shape.line_tail))
+                                     shape.line_head, shape.line_tail,
+                                     shape.adjustments))
     boxes = master_boxes + slide_boxes
     pictures = master_pictures + list(
         _shape_pictures(slide_record, image_map, scheme)
@@ -1874,6 +1940,8 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
         background_color_end=background_end,
         notes=notes,
         hidden=hidden,
+        background_gradient_angle=background_angle,
+        background_gradient_type=background_type,
     )
 
 def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | None = None) -> Presentation:

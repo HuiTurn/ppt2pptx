@@ -105,6 +105,9 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                      "crop_left": picture.crop_left, "crop_top": picture.crop_top,
                      "crop_right": picture.crop_right, "crop_bottom": picture.crop_bottom,
                      "transparent_color": picture.transparent_color,
+                     "line_color": picture.line_color,
+                     "line_dash": picture.line_dash,
+                     "line_width": picture.line_width,
                      "rotation": picture.rotation, "flip_horizontal": picture.flip_horizontal,
                      "flip_vertical": picture.flip_vertical}
                     for picture in slide.pictures
@@ -118,12 +121,15 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                      "line_color": shape.line_color,
                      "line_dash": shape.line_dash, "line_width": shape.line_width,
                      "line_head": shape.line_head, "line_tail": shape.line_tail,
+                     "adjustments": shape.adjustments,
                      "rotation": shape.rotation, "flip_horizontal": shape.flip_horizontal,
                      "flip_vertical": shape.flip_vertical}
                     for shape in slide.shapes
                 ],
                 "background_color": slide.background_color,
                 "background_color_end": slide.background_color_end,
+                "background_gradient_angle": slide.background_gradient_angle,
+                "background_gradient_type": slide.background_gradient_type,
                 "hidden": slide.hidden,
                 "notes": list(slide.notes),
                 "header_footer": ({

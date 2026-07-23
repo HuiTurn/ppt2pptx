@@ -2,10 +2,11 @@ import struct
 import unittest
 from ppt2pptx.ppt import (
     SHAPE_PRESETS, TextContent, TextRun, _GroupSpace, _MasterStyle, _anchor, _fopt_complex_properties,
-    _fopt_properties, _freeform_path, _line_dash, _line_end,
+    _connector_transform, _fopt_properties, _freeform_path, _gradient_angle, _line_dash, _line_end,
     _parse_text_ruler, _shape_style,
     _parse_text_ruler_details,
-    _minimum_unwrapped_width, _minimum_wrapped_height, _parse_slide,
+    _minimum_unwrapped_width, _minimum_wrapped_height, _parse_slide, _pictures,
+    _shape_adjustments,
     _skip_paragraph_properties, _style_text,
     _legacy_arc_path, _text, _uses_custom_geometry, extract_presentation,
     extract_slides, records,
@@ -27,6 +28,17 @@ class PptParserTests(unittest.TestCase):
         self.assertEqual(
             _shape_style({384: 1, 385: 0, 387: 0x0000FFFF}, ()),
             ("000000", None, None, "dkUpDiag", "FFFF00"),
+        )
+        self.assertEqual(_gradient_angle({395: 0xFF2E0000}), 18000000)
+        self.assertEqual(_shape_adjustments(34, {327: 4669}), (21616,))
+        self.assertEqual(_shape_adjustments(34, {327: 0xFFFFFFDD}), (-162,))
+        self.assertEqual(
+            _connector_transform(34, (5400000, True, False)),
+            (16200000, True, False),
+        )
+        self.assertEqual(
+            _connector_transform(34, (0, False, False)),
+            (10800000, True, True),
         )
         self.assertGreater(
             _minimum_unwrapped_width(
@@ -152,9 +164,15 @@ class PptParserTests(unittest.TestCase):
         document = rec(1000, bse + rec(4080, persist_atom))
         fopt = rec(
             0xF00B,
-            struct.pack("<HIHI", 0x4104, 1, 263, 0x000000FF),
+            b"".join((
+                struct.pack("<HI", 0x4104, 1),
+                struct.pack("<HI", 263, 0x000000FF),
+                struct.pack("<HI", 448, 0x08000000),
+                struct.pack("<HI", 459, 19050),
+                struct.pack("<HI", 511, 0x00080008),
+            )),
             3,
-            2,
+            5,
         )
         anchor = rec(0xF010, struct.pack("<4h", 576, 288, 1728, 1152), 0)
         slide = rec(1006, rec(0xF004, fopt + anchor))
@@ -167,6 +185,25 @@ class PptParserTests(unittest.TestCase):
         self.assertEqual(picture.data, png)
         self.assertEqual((picture.left, picture.top, picture.width, picture.height), (288, 576, 1440, 576))
         self.assertEqual(picture.transparent_color, "FF0000")
+        self.assertEqual(picture.line_color, "FFFFFF")
+        self.assertEqual(picture.line_width, 19050)
+
+    def test_embeds_standard_wmf_without_an_aldus_placeable_header(self):
+        bse_payload = bytearray(36)
+        struct.pack_into("<I", bse_payload, 28, 0)
+        document = next(records(rec(1000, rec(0xF007, bytes(bse_payload), 2, 3))))
+        raw = b"\x01\x00\x09\x00\x00\x03" + bytes(12)
+        blip_payload = bytearray(16 + 34)
+        struct.pack_into("<I4i", blip_payload, 16, len(raw), 0, 0, 100, 100)
+        struct.pack_into("<I", blip_payload, 44, len(raw))
+        blip_payload[48] = 0xFE
+        stream = rec(0xF01B, bytes(blip_payload) + raw, 0, 0x216)
+
+        data, extension, content_type = _pictures(document, stream)[1]
+
+        self.assertEqual(data, raw)
+        self.assertEqual((extension, content_type), ("wmf", "image/x-wmf"))
+        self.assertFalse(data.startswith(b"\xd7\xcd\xc6\x9a"))
 
     def test_places_master_picture_behind_slide_picture(self):
         def picture_shape(reference):

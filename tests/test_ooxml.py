@@ -199,3 +199,37 @@ class OoxmlTests(unittest.TestCase):
         self.assertIn('<a:alpha val="0"/>', xml)
         self.assertLess(xml.index("<p:pic>"), xml.index("<p:sp>"))
         self.assertLess(xml.index("<p:pic>"), xml.index("<p:txBody>"))
+
+    def test_writes_picture_line_connector_bend_and_shade_scale_gradient(self):
+        picture = Picture(
+            b"image", "png", "image/png", 100, 100, 500, 500,
+            line_color="FFFFFF", line_dash="sysDot", line_width=19050,
+        )
+        connector = BasicShape(
+            "bentConnector3", 100, 700, 1000, 500,
+            line_color="000000", adjustments=(21616,),
+        )
+        slide = Slide(
+            (), (picture,), (connector,),
+            background_color="310080",
+            background_color_end="0047FF",
+            background_gradient_angle=18000000,
+            background_gradient_type=7,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-details.pptx"
+            write_pptx(path, Presentation(5760, 4320, (slide,)))
+            with zipfile.ZipFile(path) as archive:
+                xml = archive.read("ppt/slides/slide1.xml").decode()
+        self.assertIn(
+            '<a:ln w="19050"><a:solidFill><a:srgbClr val="FFFFFF"/>',
+            xml,
+        )
+        self.assertIn('</a:prstGeom><a:noFill/><a:ln w="19050">', xml)
+        self.assertIn('<a:prstDash val="sysDot"/>', xml)
+        self.assertIn('<a:gd name="adj1" fmla="val 21616"/>', xml)
+        self.assertIn(
+            '<a:gs pos="50000"><a:srgbClr val="0047FF"/></a:gs>',
+            xml,
+        )
+        self.assertIn('<a:lin ang="18000000" scaled="1"/>', xml)
