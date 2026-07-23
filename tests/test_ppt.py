@@ -118,3 +118,29 @@ class PptParserTests(unittest.TestCase):
         self.assertEqual(shape.preset, "rect")
         self.assertEqual(shape.fill_color, "5B9BD5")
         self.assertEqual((shape.left, shape.top, shape.width, shape.height), (100, 200, 800, 400))
+
+    def test_maps_child_anchor_text_through_group_transform(self):
+        slide_ref = rec(1011, struct.pack("<5I", 2, 0, 0, 0, 0), 0)
+        document = rec(1000, rec(4080, slide_ref, instance=0))
+        directory_size = len(rec(6002, struct.pack("<2I", (1 << 20) | 2, 0), 0))
+        slide_offset = len(document) + directory_size
+        directory = rec(6002, struct.pack("<2I", (1 << 20) | 2, slide_offset), 0)
+        fspgr = rec(0xF009, struct.pack("<4i", 0, 0, 1000, 1000), 1, 0)
+        group_anchor = rec(0xF010, struct.pack("<4h", 100, 200, 600, 500), 0)  # top,left,right,bottom
+        group_sp = rec(0xF004, fspgr + rec(0xF00A, struct.pack("<2I", 1, 0x1), 2, 0) + group_anchor)
+        textbox = rec(0xF00D, rec(4008, b"Grouped", 0))
+        child_anchor = rec(0xF00F, struct.pack("<4i", 100, 200, 500, 400), 0)
+        member = rec(0xF004, rec(0xF00A, struct.pack("<2I", 2, 0), 2, 1) + child_anchor + textbox)
+        group = rec(0xF003, group_sp + member)
+        presentation = extract_presentation(document + directory + rec(1006, group))
+        box = presentation.slides[0].text_boxes[0]
+        self.assertEqual(box.text, "Grouped")
+        # child (100,200)-(500,400) in 1000x1000 space maps into abs (200,100)-(600,500)
+        self.assertEqual((box.left, box.top, box.width, box.height), (240, 180, 160, 80))
+
+    def test_ignores_trailing_garbage_after_valid_records(self):
+        text = rec(4000, "OK".encode("utf-16le"), 0)
+        slide = rec(1006, text)
+        document = rec(1000, slide)
+        presentation = extract_presentation(document + b"\x00" * 32)
+        self.assertEqual(presentation.slides[0].text_boxes[0].text, "OK")

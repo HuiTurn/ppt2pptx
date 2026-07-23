@@ -7,4 +7,6 @@ dist/
 *.egg-info/
 tests/real_samples/
 tests/real_output/
+tests/real_output_complex/
+tests/real_samples_complex/
 logs/

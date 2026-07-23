@@ -90,7 +90,11 @@ class CompoundFile:
             kind = raw[offset + 66]
             if kind not in (2, 5) or name_len < 2 or name_len > 64: continue
             name = raw[offset:offset + name_len - 2].decode("utf-16le", "replace")
-            start, size = struct.unpack_from("<IQ", raw, offset + 116)
+            # MS-CFB stores StreamSize as 8 bytes, but for version 3 compound files
+            # only the low 32 bits are meaningful; the high DWORD is often garbage.
+            # Match POI and always consume the low 32-bit size field.
+            start = struct.unpack_from("<I", raw, offset + 116)[0]
+            size = struct.unpack_from("<I", raw, offset + 120)[0]
             entries.append((name, kind, start, size))
         return {name: (kind, start, size) for name, kind, start, size in entries}
 
