@@ -30,8 +30,18 @@ def _paragraphs(box: TextBox, hyperlink_ids: dict[str, str]) -> str:
     for index, fragments in enumerate(paragraphs):
         alignment = box.paragraph_alignments[index] if index < len(box.paragraph_alignments) else None
         bullet = box.paragraph_bullets[index] if index < len(box.paragraph_bullets) else False
+        level = box.paragraph_levels[index] if index < len(box.paragraph_levels) else 0
         attributes = f' algn="{alignment}"' if alignment else ""
-        bullet_xml = '<a:buChar char="•"/>' if bullet else '<a:buNone/>'
+        if level:
+            attributes += f' lvl="{level}"'
+        if bullet:
+            margin = _emu(216 + level * 252)
+            indent = _emu(216 if level == 0 else 180)
+            attributes += f' marL="{margin}" indent="-{indent}"'
+            bullet_char = box.paragraph_bullet_chars[index] if index < len(box.paragraph_bullet_chars) else None
+            bullet_xml = f'<a:buChar char="{_xml(bullet_char or "•")}"/>'
+        else:
+            bullet_xml = '<a:buNone/>'
         ppr = f'<a:pPr{attributes}>{bullet_xml}</a:pPr>'
         runs: list[str] = []
         for value, style in fragments:
@@ -132,7 +142,14 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
         paragraphs = _paragraphs(box, hyperlink_ids)
         fill = _fill_xml(box.fill_color)
         line = _line_xml(box.line_color, box.line_dash)
-        text_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="Text Box {index-1}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(box.rotation, box.flip_horizontal, box.flip_vertical)}><a:off x="{_emu(box.left)}" y="{_emu(box.top)}"/><a:ext cx="{_emu(box.width)}" cy="{_emu(box.height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{fill}{line}</p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>{paragraphs}</p:txBody></p:sp>')
+        anchor = f' anchor="{box.vertical_anchor}"' if box.vertical_anchor else ''
+        autofit = (
+            '<a:spAutoFit/>' if box.fit_shape_to_text
+            else '<a:normAutofit/>' if box.auto_fit
+            else ''
+        )
+        wrap = "square" if box.wrap_text else "none"
+        text_shapes.append(f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="Text Box {index-1}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(box.rotation, box.flip_horizontal, box.flip_vertical)}><a:off x="{_emu(box.left)}" y="{_emu(box.top)}"/><a:ext cx="{_emu(box.width)}" cy="{_emu(box.height)}"/></a:xfrm><a:prstGeom prst="{box.preset}"><a:avLst/></a:prstGeom>{fill}{line}</p:spPr><p:txBody><a:bodyPr wrap="{wrap}"{anchor}>{autofit}</a:bodyPr><a:lstStyle/>{paragraphs}</p:txBody></p:sp>')
     footer_shapes = _header_footer_shapes(header_footer, slide_width, slide_height, slide_number,
                                           len(basic_shapes) + len(parts) + 2)
     picture_shapes = []
