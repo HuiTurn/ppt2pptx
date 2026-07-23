@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.2
+
+- Preserve paragraph nesting, level-specific master text styles, bullet
+  characters, vertical anchoring, wrapping, and both legacy text autofit modes.
+- Apply nested group rotation, flipping, scaling, and large child-anchor
+  coordinates consistently to text, pictures, and editable shapes.
+- Preserve the geometry of text-bearing autoshapes and emit valid OOXML preset
+  names for legacy arrows.
+- Respect explicit no-line flags and underline recovered hyperlinks.
+- Harden version 3 CFB stream-size handling and truncated optional paragraph
+  records.
+- Fix packed freeform vertex parsing so open paths retain their final vertices
+  without gaining an unintended closing segment.
+- Expand inspection diagnostics with paragraph, layout, geometry, fill, and line
+  details.
+- Validate the converter against 15 PowerPoint 97–2003 samples and a complex
+  30-slide presentation through conversion, rendering, strict parsing, and
+  overflow checks.
+
+## 0.3.1
+
+- Preserve hidden-slide state in generated presentations.
+- Verify release tags against the package version and validate distributions
+  before publishing them to PyPI through trusted publishing.
+
 ## 0.3.0
 
 - Add RC4 CryptoAPI password verification and record-level decryption, plus
