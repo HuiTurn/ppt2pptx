@@ -64,21 +64,36 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                      "paragraph_bullets": box.paragraph_bullets,
                      "paragraph_levels": box.paragraph_levels,
                      "paragraph_bullet_chars": box.paragraph_bullet_chars,
+                     "paragraph_left_margins": box.paragraph_left_margins,
+                     "paragraph_indents": box.paragraph_indents,
+                     "paragraph_line_spacings": box.paragraph_line_spacings,
+                     "paragraph_space_before": box.paragraph_space_before,
+                     "paragraph_space_after": box.paragraph_space_after,
                      "auto_fit": box.auto_fit,
                      "fit_shape_to_text": box.fit_shape_to_text,
                      "vertical_anchor": box.vertical_anchor,
+                     "inset_left": box.inset_left, "inset_top": box.inset_top,
+                     "inset_right": box.inset_right, "inset_bottom": box.inset_bottom,
+                     "is_placeholder": box.is_placeholder,
                      "preset": box.preset,
                      "wrap_text": box.wrap_text,
                      "fill_color": box.fill_color,
+                     "fill_pattern": box.fill_pattern,
+                     "fill_back_color": box.fill_back_color,
                      "line_color": box.line_color,
                      "line_dash": box.line_dash,
+                     "line_width": box.line_width,
+                     "line_head": box.line_head,
+                     "line_tail": box.line_tail,
+                     "default_tab_size": box.default_tab_size,
+                     "tab_stops": box.tab_stops,
                      "rotation": box.rotation, "flip_horizontal": box.flip_horizontal,
                      "flip_vertical": box.flip_vertical,
                      "runs": [
                          {"text": run.text, "bold": run.bold, "italic": run.italic,
                           "underline": run.underline, "font_size": run.font_size,
                           "color": run.color, "typeface": run.typeface,
-                          "hyperlink": run.hyperlink}
+                          "hyperlink": run.hyperlink, "baseline": run.baseline}
                          for run in box.runs
                      ]}
                     for box in slide.text_boxes
@@ -89,6 +104,7 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                      "top": picture.top, "width": picture.width, "height": picture.height,
                      "crop_left": picture.crop_left, "crop_top": picture.crop_top,
                      "crop_right": picture.crop_right, "crop_bottom": picture.crop_bottom,
+                     "transparent_color": picture.transparent_color,
                      "rotation": picture.rotation, "flip_horizontal": picture.flip_horizontal,
                      "flip_vertical": picture.flip_vertical}
                     for picture in slide.pictures
@@ -96,7 +112,12 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                 "shapes": [
                     {"preset": shape.preset, "left": shape.left, "top": shape.top,
                      "width": shape.width, "height": shape.height,
-                     "fill_color": shape.fill_color, "line_color": shape.line_color,
+                     "fill_color": shape.fill_color,
+                     "fill_pattern": shape.fill_pattern,
+                     "fill_back_color": shape.fill_back_color,
+                     "line_color": shape.line_color,
+                     "line_dash": shape.line_dash, "line_width": shape.line_width,
+                     "line_head": shape.line_head, "line_tail": shape.line_tail,
                      "rotation": shape.rotation, "flip_horizontal": shape.flip_horizontal,
                      "flip_vertical": shape.flip_vertical}
                     for shape in slide.shapes
