@@ -180,7 +180,14 @@ def _line_xml(
 
 def _path_xml(shape: BasicShape) -> str:
     if not shape.path:
-        return f'<a:prstGeom prst="{shape.preset}"><a:avLst/></a:prstGeom>'
+        adjustments = "".join(
+            f'<a:gd name="adj{index}" fmla="val {value}"/>'
+            for index, value in enumerate(shape.adjustments, 1)
+        )
+        return (
+            f'<a:prstGeom prst="{shape.preset}">'
+            f'<a:avLst>{adjustments}</a:avLst></a:prstGeom>'
+        )
     commands: list[str] = []
     for item in shape.path:
         kind = item[0]
@@ -234,7 +241,7 @@ def _header_footer_shapes(value: HeaderFooter | None, slide_width: int, slide_he
                                    slide_height - 336, 576, 240, str(slide_number), "r", "slidenum"))
     return result
 
-def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, hidden: bool) -> str:
+def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, background_gradient_angle: int | None, background_gradient_type: int | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, hidden: bool) -> str:
     background_drawing_shapes = []
     foreground_drawing_shapes = []
     for index, shape in enumerate(basic_shapes, 2):
@@ -289,6 +296,11 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
     overlay_picture_shapes = []
     for index, (picture, relation_id) in enumerate(pictures, len(basic_shapes) + len(parts) + len(footer_shapes) + 2):
         crop = f'<a:srcRect l="{picture.crop_left}" t="{picture.crop_top}" r="{picture.crop_right}" b="{picture.crop_bottom}"/>' if any((picture.crop_left, picture.crop_top, picture.crop_right, picture.crop_bottom)) else ''
+        stretch = (
+            '<a:stretch/>'
+            if picture.extension in ("wmf", "emf")
+            else '<a:stretch><a:fillRect/></a:stretch>'
+        )
         transparent = (
             f'<a:clrChange useA="1"><a:clrFrom><a:srgbClr val="{picture.transparent_color}"/>'
             f'</a:clrFrom><a:clrTo><a:srgbClr val="{picture.transparent_color}">'
@@ -299,7 +311,10 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
             picture.left, picture.top, picture.width, picture.height,
             picture.rotation
         )
-        picture_xml = f'<p:pic><p:nvPicPr><p:cNvPr id="{index}" name="Picture {index}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{relation_id}">{transparent}</a:blip>{crop}<a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm{_xfrm_attributes(picture.rotation, picture.flip_horizontal, picture.flip_vertical)}><a:off x="{_emu(left)}" y="{_emu(top)}"/><a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+        line = _line_xml(
+            picture.line_color, picture.line_dash, picture.line_width
+        )
+        picture_xml = f'<p:pic><p:nvPicPr><p:cNvPr id="{index}" name="Picture {index}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{relation_id}">{transparent}</a:blip>{crop}{stretch}</p:blipFill><p:spPr><a:xfrm{_xfrm_attributes(picture.rotation, picture.flip_horizontal, picture.flip_vertical)}><a:off x="{_emu(left)}" y="{_emu(top)}"/><a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>{line}</p:spPr></p:pic>'
         # Large pictures are normally screenshots, plots, or photo backdrops
         # that annotations must overlay.  Small pictures are commonly WMF
         # equations or clip art and need to remain above filled diagram boxes.
@@ -310,7 +325,20 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
         )
         target.append(picture_xml)
     if background_color and background_color_end:
-        background = f'<p:bg><p:bgPr><a:gradFill rotWithShape="0"><a:gsLst><a:gs pos="0"><a:srgbClr val="{background_color}"/></a:gs><a:gs pos="100000"><a:srgbClr val="{background_color_end}"/></a:gs></a:gsLst><a:lin ang="2700000" scaled="1"/></a:gradFill><a:effectLst/></p:bgPr></p:bg>'
+        stops = (
+            f'<a:gs pos="0"><a:srgbClr val="{background_color}"/></a:gs>'
+            f'<a:gs pos="50000"><a:srgbClr val="{background_color_end}"/></a:gs>'
+            f'<a:gs pos="100000"><a:srgbClr val="{background_color}"/></a:gs>'
+            if background_gradient_type == 7
+            else
+            f'<a:gs pos="0"><a:srgbClr val="{background_color}"/></a:gs>'
+            f'<a:gs pos="100000"><a:srgbClr val="{background_color_end}"/></a:gs>'
+        )
+        angle = (
+            background_gradient_angle
+            if background_gradient_angle is not None else 2700000
+        )
+        background = f'<p:bg><p:bgPr><a:gradFill rotWithShape="0"><a:gsLst>{stops}</a:gsLst><a:lin ang="{angle}" scaled="1"/></a:gradFill><a:effectLst/></p:bgPr></p:bg>'
     else:
         background = f'<p:bg><p:bgPr><a:solidFill><a:srgbClr val="{background_color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>' if background_color else ''
     show = ' show="0"' if hidden else ''
@@ -413,7 +441,7 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
                     picture_rels.append(f'<Relationship Id="{notes_relation}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide{i}.xml"/>')
                     archive.writestr(f'ppt/notesSlides/notesSlide{i}.xml', _notes_slide(slides[i-1].notes))
                     archive.writestr(f'ppt/notesSlides/_rels/notesSlide{i}.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide' + str(i) + '.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="../notesMasters/notesMaster1.xml"/></Relationships>')
-                archive.writestr(f'ppt/slides/slide{i}.xml', _slide(slides[i-1].text_boxes, picture_refs, slides[i-1].shapes, slides[i-1].background_color, slides[i-1].background_color_end, hyperlink_ids, slides[i-1].header_footer, presentation.width, presentation.height, i, slides[i-1].hidden))
+                archive.writestr(f'ppt/slides/slide{i}.xml', _slide(slides[i-1].text_boxes, picture_refs, slides[i-1].shapes, slides[i-1].background_color, slides[i-1].background_color_end, slides[i-1].background_gradient_angle, slides[i-1].background_gradient_type, hyperlink_ids, slides[i-1].header_footer, presentation.width, presentation.height, i, slides[i-1].hidden))
                 archive.writestr(f'ppt/slides/_rels/slide{i}.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>' + ''.join(picture_rels) + '</Relationships>')
             master_rid = len(slides) + 1
             rels.append(f'<Relationship Id="rId{master_rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>')

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4
+
+- Preserve legacy ShadeScale background gradients, including their angle and
+  symmetric color stops.
+- Preserve picture line color, width, and dash properties.
+- Emit standard WMF payloads so OLE preview images retain transparent
+  backgrounds across Office-compatible renderers.
+- Preserve custom bend positions and endpoint direction for three-segment
+  elbow connectors.
+
 ## 0.3.3
 
 - Preserve legacy line widths, dash styles, arrowhead types and sizes, including
