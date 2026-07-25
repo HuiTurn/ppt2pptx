@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 import zipfile
 
 from .errors import InvalidPpt
-from .ppt import BasicShape, HeaderFooter, Picture, Presentation, TextBox, TextRun
+from .ppt import BasicShape, HeaderFooter, Picture, Presentation, Table, TextBox, TextRun
 
 CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 
@@ -241,7 +241,63 @@ def _header_footer_shapes(value: HeaderFooter | None, slide_width: int, slide_he
                                    slide_height - 336, 576, 240, str(slide_number), "r", "slidenum"))
     return result
 
-def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, background_gradient_angle: int | None, background_gradient_type: int | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, hidden: bool) -> str:
+# Built-in Office table style (Medium Style 2 - Accent 1). Referencing a
+# built-in GUID lets PowerPoint resolve the style without a custom tableStyles
+# part while still drawing clean borders around the converted cells.
+_TABLE_STYLE_ID = "{2D5ABB26-0587-4C30-8999-92F81FD0307C}"
+
+def _table_frames(tables: tuple[Table, ...], start_id: int) -> tuple[list[str], int]:
+    frames: list[str] = []
+    next_id = start_id
+    for table in tables:
+        rows, cols = table.rows, table.cols
+        col_widths = [
+            max(cell.width for cell in table.cells if cell.col == c) for c in range(cols)
+        ]
+        row_heights = [
+            max(cell.height for cell in table.cells if cell.row == r) for r in range(rows)
+        ]
+        grid = "".join(f'<a:gridCol w="{_emu(w)}"/>' for w in col_widths)
+        rows_xml = ""
+        for r in range(rows):
+            cells_xml = ""
+            for c in range(cols):
+                cell = next(x for x in table.cells if x.row == r and x.col == c)
+                textbox = TextBox(text=cell.text, runs=cell.runs, left=cell.left, top=cell.top, width=cell.width, height=cell.height, fill_color=cell.fill_color, wrap_text=True)
+                body = _paragraphs(textbox, {})
+                tcpr = f'<a:tcPr marL="45720" marR="45720" marT="45720" marB="45720">{_fill_xml(cell.fill_color)}</a:tcPr>'
+                cells_xml += f'<a:tc><a:txBody><a:bodyPr anchor="ctr"/><a:lstStyle/>{body}</a:txBody>{tcpr}</a:tc>'
+            rows_xml += f'<a:tr h="{_emu(row_heights[r])}">{cells_xml}</a:tr>'
+        tbl_borders = (
+            '<a:tblBorders>'
+            '<a:top w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:top>'
+            '<a:left w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:left>'
+            '<a:bottom w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:bottom>'
+            '<a:right w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:right>'
+            '<a:insideH w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:insideH>'
+            '<a:insideV w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:insideV>'
+            '</a:tblBorders>'
+        )
+        tbl = (
+            f'<a:tbl><a:tblPr firstRow="0" bandRow="0">'
+            f'<a:tableStyleId>{_TABLE_STYLE_ID}</a:tableStyleId>{tbl_borders}</a:tblPr>'
+            f'<a:tblGrid>{grid}</a:tblGrid>{rows_xml}</a:tbl>'
+        )
+        frame = (
+            f'<p:graphicFrame><p:nvGraphicFramePr>'
+            f'<p:cNvPr id="{next_id}" name="Table {next_id}"/>'
+            f'<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr>'
+            f'<p:nvPr/></p:nvGraphicFramePr>'
+            f'<p:xfrm><a:off x="{_emu(table.left)}" y="{_emu(table.top)}"/>'
+            f'<a:ext cx="{_emu(table.width)}" cy="{_emu(table.height)}"/></p:xfrm>'
+            f'<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">'
+            f'{tbl}</a:graphicData></a:graphic></p:graphicFrame>'
+        )
+        frames.append(frame)
+        next_id += 1
+    return frames, next_id
+
+def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, background_gradient_angle: int | None, background_gradient_type: int | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, tables: tuple[Table, ...], hidden: bool) -> str:
     background_drawing_shapes = []
     foreground_drawing_shapes = []
     for index, shape in enumerate(basic_shapes, 2):
@@ -342,7 +398,9 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
     else:
         background = f'<p:bg><p:bgPr><a:solidFill><a:srgbClr val="{background_color}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg>' if background_color else ''
     show = ' show="0"' if hidden else ''
-    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"' + show + '><p:cSld>' + background + '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' + ''.join(background_drawing_shapes) + ''.join(base_picture_shapes) + ''.join(foreground_drawing_shapes) + ''.join(overlay_picture_shapes) + ''.join(text_shapes) + ''.join(footer_shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
+    table_next_id = len(basic_shapes) + len(parts) + len(footer_shapes) + len(pictures) + 2
+    table_frames, _ = _table_frames(tables, table_next_id)
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"' + show + '><p:cSld>' + background + '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' + ''.join(background_drawing_shapes) + ''.join(base_picture_shapes) + ''.join(foreground_drawing_shapes) + ''.join(overlay_picture_shapes) + ''.join(table_frames) + ''.join(text_shapes) + ''.join(footer_shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
 
 def _notes_slide(values: tuple[str, ...]) -> str:
     text = "\r".join(values)
@@ -441,7 +499,7 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
                     picture_rels.append(f'<Relationship Id="{notes_relation}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide{i}.xml"/>')
                     archive.writestr(f'ppt/notesSlides/notesSlide{i}.xml', _notes_slide(slides[i-1].notes))
                     archive.writestr(f'ppt/notesSlides/_rels/notesSlide{i}.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide' + str(i) + '.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="../notesMasters/notesMaster1.xml"/></Relationships>')
-                archive.writestr(f'ppt/slides/slide{i}.xml', _slide(slides[i-1].text_boxes, picture_refs, slides[i-1].shapes, slides[i-1].background_color, slides[i-1].background_color_end, slides[i-1].background_gradient_angle, slides[i-1].background_gradient_type, hyperlink_ids, slides[i-1].header_footer, presentation.width, presentation.height, i, slides[i-1].hidden))
+                archive.writestr(f'ppt/slides/slide{i}.xml', _slide(slides[i-1].text_boxes, picture_refs, slides[i-1].shapes, slides[i-1].background_color, slides[i-1].background_color_end, slides[i-1].background_gradient_angle, slides[i-1].background_gradient_type, hyperlink_ids, slides[i-1].header_footer, presentation.width, presentation.height, i, slides[i-1].tables, slides[i-1].hidden))
                 archive.writestr(f'ppt/slides/_rels/slide{i}.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>' + ''.join(picture_rels) + '</Relationships>')
             master_rid = len(slides) + 1
             rels.append(f'<Relationship Id="rId{master_rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>')

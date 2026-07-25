@@ -21,6 +21,9 @@ faithful.
   position, rotation, and flips when present.
 - Recreates common editable shapes, solid/gradient backgrounds, comments, speaker
   notes, slide numbers, dates, headers, and footers.
+- Reconstructs legacy native tables (regular grids of rectangle cells) as
+  editable DrawingML `<a:tbl>` graphic frames with preserved cell fills and
+  1-pt borders, instead of flattening them into scattered shapes.
 - Copies common core properties such as title, author, keywords, and timestamps.
 - Supports atomic single-file and recursive batch conversion with JSON diagnostics.
 

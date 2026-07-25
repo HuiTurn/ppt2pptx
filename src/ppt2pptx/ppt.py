@@ -234,6 +234,28 @@ class HeaderFooter:
     show_slide_number: bool = False
 
 @dataclass(frozen=True, slots=True)
+class TableCell:
+    text: str
+    runs: tuple[TextRun, ...]
+    left: int
+    top: int
+    width: int
+    height: int
+    fill_color: str | None = None
+    row: int = 0
+    col: int = 0
+
+@dataclass(frozen=True, slots=True)
+class Table:
+    left: int
+    top: int
+    width: int
+    height: int
+    rows: int
+    cols: int
+    cells: tuple[TableCell, ...]  # row-major, len == rows * cols
+
+@dataclass(frozen=True, slots=True)
 class Slide:
     text_boxes: tuple[TextBox, ...]
     pictures: tuple[Picture, ...] = ()
@@ -246,6 +268,8 @@ class Slide:
     hidden: bool = False
     background_gradient_angle: int | None = None
     background_gradient_type: int | None = None
+    tables: tuple[Table, ...] = ()
+    excluded_offsets: frozenset[int] = frozenset()
 
 @dataclass(frozen=True, slots=True)
 class CoreProperties:
@@ -266,6 +290,7 @@ class Presentation:
     height: int
     slides: tuple[Slide, ...]
     core_properties: CoreProperties = CoreProperties()
+    excluded_offsets: frozenset[int] = frozenset()
 
 @dataclass(frozen=True, slots=True)
 class LossyFeatureLocation:
@@ -1193,9 +1218,11 @@ def _minimum_wrapped_height(
     )
     return round(text_height + vertical_insets)
 
-def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...], *, skip_placeholders: bool = False) -> list[TextBox]:
+def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...], *, skip_placeholders: bool = False, exclude: set[int] | None = None) -> list[TextBox]:
     result: list[TextBox] = []
     for shape, space in _iter_sp_containers(slide):
+        if exclude is not None and shape.offset in exclude:
+            continue
         is_placeholder = _is_placeholder(shape)
         if skip_placeholders and is_placeholder:
             continue
@@ -1571,9 +1598,11 @@ def _office_color(value: int | None, scheme: tuple[str, ...] = ()) -> str | None
     red, green, blue = value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF
     return f"{red:02X}{green:02X}{blue:02X}"
 
-def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], scheme: tuple[str, ...]) -> list[BasicShape]:
+def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], scheme: tuple[str, ...], exclude: set[int] | None = None) -> list[BasicShape]:
     result: list[BasicShape] = []
     for shape, space in _iter_sp_containers(slide):
+        if exclude is not None and shape.offset in exclude:
+            continue
         children = _direct_children(shape)
         if _is_background_shape(children) or _is_placeholder(shape):
             continue
@@ -1657,6 +1686,132 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
             adjustments=_shape_adjustments(sp.instance, properties),
         ))
     return result
+
+def _cluster_axis(positions: list[int], sizes: list[int]) -> list[dict[str, float]] | None:
+    """Group sorted positions into clusters; each cluster keeps a running
+    center and average size. Returns None for empty input."""
+    if not positions:
+        return None
+    order = sorted(range(len(positions)), key=lambda i: positions[i])
+    clusters: list[dict[str, float]] = []
+    for i in order:
+        p, s = positions[i], sizes[i]
+        if clusters:
+            tolerance = max(8.0, 0.25 * clusters[-1]["size"])
+            if abs(p - clusters[-1]["center"]) <= tolerance:
+                n = len(clusters[-1]["items"])
+                clusters[-1]["center"] = (clusters[-1]["center"] * n + p) / (n + 1)
+                clusters[-1]["size"] = (clusters[-1]["size"] * n + s) / (n + 1)
+                clusters[-1]["items"].append(i)
+                continue
+        clusters.append({"center": float(p), "size": float(s), "items": [i]})
+    return clusters
+
+
+def _detect_tables(
+    slide: Record,
+    external_text: list[TextContent],
+    fonts: tuple[str, ...],
+    masters: dict[int, tuple[_MasterStyle, ...]],
+    hyperlinks: dict[int, str],
+    scheme: tuple[str, ...],
+) -> tuple[list[Table], set[int]]:
+    """Detect legacy PowerPoint tables (regular grids of text-bearing rectangle
+    cells) and return ``(tables, excluded_offsets)``.
+
+    Detection is intentionally strict: a table must form a complete ``R x C`` grid
+    (``R >= 2`` and ``C >= 2``) of rectangle autoshape cells with consistent
+    column widths and row heights. Looser layouts fall back to the existing
+    flattened rendering so unrelated text arrangements are never mis-detected.
+    The returned offsets let the caller suppress the flattened cell shapes and
+    the misleading freeform warning that legacy gridline geometry would raise.
+    """
+    cells: list[dict[str, object]] = []
+    thin_shapes: list[tuple[int, int, int, int, int]] = []  # offset, left, top, right, bottom
+    for shape, space in _iter_sp_containers(slide):
+        children = _direct_children(shape)
+        if _is_background_shape(children) or _is_placeholder(shape):
+            continue
+        sp = next((child for child in children if child.type == 0xF00A and len(child.payload) >= 8), None)
+        if sp is None:
+            continue
+        textbox = next((child for child in children if child.type == RT_OFFICEART_CLIENT_TEXTBOX), None)
+        if textbox is not None:
+            has_visible_text = any(
+                child.type in (RT_TEXT_CHARS_ATOM, RT_TEXT_BYTES_ATOM, RT_OUTLINE_TEXT_REF_ATOM)
+                for child in descendants(textbox)
+            )
+            if has_visible_text and sp.instance == 1:
+                fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
+                properties = _fopt_properties(fopt) if fopt else {}
+                left, top, width, height = _anchor(children, 0, space)
+                contents = _text_contents(list(descendants(textbox)), fonts, masters, hyperlinks, scheme)
+                content = contents[0] if contents else None
+                if content is not None:
+                    fill, _line, _dash, _fp, _fb = _shape_style(properties, scheme)
+                    cells.append({
+                        "offset": shape.offset,
+                        "left": left, "top": top, "width": width, "height": height,
+                        "content": content, "fill": fill,
+                    })
+                continue
+        left, top, width, height = _anchor(children, 0, space)
+        if width <= 2 or height <= 2:
+            thin_shapes.append((shape.offset, left, top, left + width, top + height))
+    if len(cells) < 4:
+        return [], set()
+
+    row_clusters = _cluster_axis([c["top"] for c in cells], [c["height"] for c in cells])
+    col_clusters = _cluster_axis([c["left"] for c in cells], [c["width"] for c in cells])
+    if row_clusters is None or col_clusters is None or len(row_clusters) < 2 or len(col_clusters) < 2:
+        return [], set()
+
+    grid: dict[tuple[int, int], dict[str, object]] = {}
+    for c in cells:
+        row = min(range(len(row_clusters)), key=lambda i: abs(c["top"] - row_clusters[i]["center"]))
+        col = min(range(len(col_clusters)), key=lambda i: abs(c["left"] - col_clusters[i]["center"]))
+        if (row, col) in grid:
+            return [], set()
+        grid[(row, col)] = c
+    rows, cols = len(row_clusters), len(col_clusters)
+    if len(grid) != rows * cols:
+        return [], set()
+
+    col_widths = [max(grid[(r, c)]["width"] for r in range(rows)) for c in range(cols)]
+    row_heights = [max(grid[(r, c)]["height"] for c in range(cols)) for r in range(rows)]
+    for c in cells:
+        row = min(range(rows), key=lambda i: abs(c["top"] - row_clusters[i]["center"]))
+        col = min(range(cols), key=lambda i: abs(c["left"] - col_clusters[i]["center"]))
+        if abs(c["width"] - col_widths[col]) > 0.4 * col_widths[col] + 8:
+            return [], set()
+        if abs(c["height"] - row_heights[row]) > 0.4 * row_heights[row] + 8:
+            return [], set()
+
+    table_left = min(c["left"] for c in cells)
+    table_top = min(c["top"] for c in cells)
+    table_cells: list[TableCell] = []
+    for row in range(rows):
+        for col in range(cols):
+            c = grid[(row, col)]
+            content = c["content"]
+            table_cells.append(TableCell(
+                text=content.text,
+                runs=content.runs,
+                left=c["left"], top=c["top"], width=c["width"], height=c["height"],
+                fill_color=c["fill"],
+                row=row, col=col,
+            ))
+    table = Table(
+        left=table_left, top=table_top,
+        width=sum(col_widths), height=sum(row_heights),
+        rows=rows, cols=cols, cells=tuple(table_cells),
+    )
+    excluded: set[int] = {c["offset"] for c in cells}
+    for offset, l, t, r_, b in thin_shapes:
+        if l >= table_left and r_ <= table_left + table.width and t >= table_top and b <= table_top + table.height:
+            excluded.add(offset)
+    return [table], excluded
+
 
 def _background(
     slide: Record, scheme: tuple[str, ...]
@@ -1890,8 +2045,12 @@ def _header_footer(record: Record, base: HeaderFooter | None = None, *, instance
     )
 
 def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int) -> Slide:
-    slide_boxes = _shape_text_boxes(
+    tables, table_excluded = _detect_tables(
         slide_record, external_text, fonts, masters, hyperlinks, scheme
+    )
+    slide_boxes = _shape_text_boxes(
+        slide_record, external_text, fonts, masters, hyperlinks, scheme,
+        exclude=table_excluded,
     )
     if not slide_boxes:
         texts = [value for child in descendants(slide_record) if (value := _text(child))]
@@ -1948,7 +2107,7 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                                          shape.fill_pattern, shape.fill_back_color,
                                          shape.line_head, shape.line_tail,
                                          shape.adjustments))
-    for shape in _basic_shapes(slide_record, image_map, scheme):
+    for shape in _basic_shapes(slide_record, image_map, scheme, exclude=table_excluded):
         left, top = max(0, shape.left), max(0, shape.top)
         right = min(slide_width, shape.left + shape.width)
         bottom = min(slide_height, shape.top + shape.height)
@@ -1981,6 +2140,8 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
         hidden=hidden,
         background_gradient_angle=background_angle,
         background_gradient_type=background_type,
+        tables=tuple(tables),
+        excluded_offsets=frozenset(table_excluded),
     )
 
 def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | None = None) -> Presentation:
@@ -2034,7 +2195,10 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
         for slide_record in descendants(document):
             if slide_record.type == RT_SLIDE:
                 slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_records[0] if master_records else None, (), width, height))
-    return Presentation(width, height, tuple(slides))
+    excluded_offsets: set[int] = set()
+    for slide in slides:
+        excluded_offsets |= slide.excluded_offsets
+    return Presentation(width, height, tuple(slides), excluded_offsets=frozenset(excluded_offsets))
 
 def extract_slides(powerpoint_document: bytes) -> list[list[str]]:
     return [[box.text for box in slide.text_boxes] for slide in extract_presentation(powerpoint_document).slides]
@@ -2160,11 +2324,13 @@ def _object_kind_for_code(code: str) -> str:
     }.get(code, "object")
 
 def _unparsed_freeform_locations(
-    data: bytes, ranges: tuple[tuple[int, int, int], ...]
+    data: bytes, ranges: tuple[tuple[int, int, int], ...], exclude: set[int] | None = None
 ) -> tuple[LossyFeatureLocation, ...]:
     locations: list[LossyFeatureLocation] = []
     for record in _iter_all_records(data):
         if record.type != RT_OFFICEART_SP_CONTAINER:
+            continue
+        if exclude is not None and record.offset in exclude:
             continue
         children = list(records(record.payload))
         sp = next((child for child in children if child.type == 0xF00A and len(child.payload) >= 8), None)
@@ -2186,7 +2352,7 @@ def _unparsed_freeform_locations(
             )
     return tuple(locations)
 
-def detect_lossy_features(powerpoint_document: bytes) -> tuple[LossyFeature, ...]:
+def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] | None = None) -> tuple[LossyFeature, ...]:
     """Return object-backed loss diagnostics for unsupported/approximated content."""
     ranges = _slide_byte_ranges(powerpoint_document)
     buckets: dict[str, dict[str, object]] = {}
@@ -2244,7 +2410,7 @@ def detect_lossy_features(powerpoint_document: bytes) -> tuple[LossyFeature, ...
                     record_offset=record.offset,
                 )
 
-    freeform_locations = _unparsed_freeform_locations(powerpoint_document, ranges)
+    freeform_locations = _unparsed_freeform_locations(powerpoint_document, ranges, exclude_offsets)
     if freeform_locations:
         add(
             "COMPLEX_FREEFORM_OMITTED",
