@@ -31,6 +31,30 @@ RT_OFFICEART_FOPT = 0xF00B
 RT_OE_PLACEHOLDER_ATOM = 3011
 RT_ROUNDTRIP_OPAQUE_MIN = 1053
 RT_ROUNDTRIP_OPAQUE_MAX = 1064
+RT_SOUND_COLLECTION = 0x07E4
+RT_SOUND = 0x07E6
+RT_SOUND_DATA_BLOB = 0x07E7
+RT_EXTERNAL_OLE_OBJECT_ATOM = 0x0FC3
+RT_EXTERNAL_OLE_EMBED = 0x0FCC
+RT_EXTERNAL_OLE_LINK = 0x0FCE
+RT_EXTERNAL_OLE_CONTROL = 0x0FEE
+RT_ANIMATION_INFO_ATOM = 0x0FF1
+RT_EXTERNAL_VIDEO = 0x1005
+RT_EXTERNAL_AVI_MOVIE = 0x1006
+RT_EXTERNAL_MCI_MOVIE = 0x1007
+RT_EXTERNAL_OLE_OBJECT_STG = 0x1011
+RT_ANIMATION_INFO = 0x1014
+RT_PROG_BINARY_TAG = 0x138A
+RT_BINARY_TAG_DATA_BLOB = 0x138B
+RT_CHART_BUILD = 0x2B04
+RT_CHART_BUILD_ATOM = 0x2B05
+RT_DIAGRAM_BUILD = 0x2B06
+RT_DIAGRAM_BUILD_ATOM = 0x2B07
+RT_ROUNDTRIP_ANIMATION_ATOM = 0x2B0B
+RT_ROUNDTRIP_ANIMATION_HASH_ATOM = 0x2B0D
+RT_TIME_NODE = 0xF127
+RT_TIME_EXT_TIME_NODE = 0xF144
+RT_CSTRING = 0x0FBA
 CONTAINER_VERSION = 0xF
 DEFAULT_SLIDE_WIDTH = 5760
 DEFAULT_SLIDE_HEIGHT = 4320
@@ -242,6 +266,21 @@ class Presentation:
     height: int
     slides: tuple[Slide, ...]
     core_properties: CoreProperties = CoreProperties()
+
+@dataclass(frozen=True, slots=True)
+class LossyFeatureLocation:
+    slide_index: int | None
+    record_type: int
+    record_offset: int
+    object_kind: str
+
+@dataclass(frozen=True, slots=True)
+class LossyFeature:
+    code: str
+    message: str
+    count: int
+    record_types: tuple[int, ...] = ()
+    locations: tuple[LossyFeatureLocation, ...] = ()
 
 def records(data: bytes, start: int = 0, end: int | None = None):
     end = len(data) if end is None else end
@@ -1999,3 +2038,248 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
 
 def extract_slides(powerpoint_document: bytes) -> list[list[str]]:
     return [[box.text for box in slide.text_boxes] for slide in extract_presentation(powerpoint_document).slides]
+
+_LOSSY_RECORD_CODES: dict[int, tuple[str, str]] = {
+    RT_ANIMATION_INFO: ("ANIMATION_OMITTED", "animation information was omitted"),
+    RT_ANIMATION_INFO_ATOM: ("ANIMATION_OMITTED", "animation information was omitted"),
+    RT_TIME_NODE: ("ANIMATION_OMITTED", "animation timeline was omitted"),
+    RT_TIME_EXT_TIME_NODE: ("ANIMATION_OMITTED", "animation timeline was omitted"),
+    RT_ROUNDTRIP_ANIMATION_ATOM: ("ANIMATION_OMITTED", "animation timeline was omitted"),
+    RT_ROUNDTRIP_ANIMATION_HASH_ATOM: ("ANIMATION_OMITTED", "animation timeline was omitted"),
+    RT_CHART_BUILD: ("ANIMATION_OMITTED", "chart build animation was omitted"),
+    RT_CHART_BUILD_ATOM: ("ANIMATION_OMITTED", "chart build animation was omitted"),
+    RT_SOUND_COLLECTION: ("AUDIO_OMITTED", "embedded audio was omitted"),
+    RT_SOUND: ("AUDIO_OMITTED", "embedded audio was omitted"),
+    RT_SOUND_DATA_BLOB: ("AUDIO_OMITTED", "embedded audio was omitted"),
+    RT_EXTERNAL_VIDEO: ("VIDEO_OMITTED", "embedded video was omitted"),
+    RT_EXTERNAL_AVI_MOVIE: ("VIDEO_OMITTED", "embedded video was omitted"),
+    RT_EXTERNAL_MCI_MOVIE: ("VIDEO_OMITTED", "embedded video was omitted"),
+    RT_EXTERNAL_OLE_OBJECT_ATOM: ("EMBEDDED_OLE_OMITTED", "embedded OLE object was omitted"),
+    RT_EXTERNAL_OLE_EMBED: ("EMBEDDED_OLE_OMITTED", "embedded OLE object was omitted"),
+    RT_EXTERNAL_OLE_LINK: ("EMBEDDED_OLE_OMITTED", "linked OLE object was omitted"),
+    RT_EXTERNAL_OLE_CONTROL: ("EMBEDDED_OLE_OMITTED", "ActiveX/OLE control was omitted"),
+    RT_EXTERNAL_OLE_OBJECT_STG: ("EMBEDDED_OLE_OMITTED", "embedded OLE storage was omitted"),
+    RT_DIAGRAM_BUILD: ("DIAGRAM_OR_SMARTART_OMITTED", "diagram/SmartArt build was omitted"),
+    RT_DIAGRAM_BUILD_ATOM: ("DIAGRAM_OR_SMARTART_OMITTED", "diagram/SmartArt build was omitted"),
+}
+
+_CHART_MARKERS = (
+    "MSGraph.Chart",
+    "Excel.Chart",
+    "MSGraph",
+    "orgchart",
+)
+_DIAGRAM_MARKERS = (
+    "SmartArt",
+    "Office.SmartArt",
+    "schemas.openxmlformats.org/drawingml/2006/diagram",
+)
+
+def _utf16_payload_text(payload: bytes) -> str:
+    try:
+        return payload.decode("utf-16le", errors="ignore")
+    except Exception:
+        return ""
+
+def _payload_has_marker(payload: bytes, markers: tuple[str, ...]) -> bool:
+    text = _utf16_payload_text(payload)
+    folded = text.casefold()
+    for marker in markers:
+        if marker.casefold() in folded:
+            return True
+        if marker.encode("utf-16le") in payload:
+            return True
+        if marker.encode("ascii") in payload:
+            return True
+    return False
+
+def _iter_all_records(data: bytes):
+    """Yield every record with offsets absolute to ``data``."""
+
+    def walk(start: int, end: int):
+        for record in records(data, start, end):
+            yield record
+            if record.version != CONTAINER_VERSION:
+                continue
+            if RT_ROUNDTRIP_OPAQUE_MIN <= record.type <= RT_ROUNDTRIP_OPAQUE_MAX:
+                continue
+            payload_start = record.offset + 8
+            yield from walk(payload_start, payload_start + len(record.payload))
+
+    yield from walk(0, len(data))
+
+def _slide_byte_ranges(data: bytes) -> tuple[tuple[int, int, int], ...]:
+    """Return (1-based slide index, start offset, end offset) for each normal slide."""
+    roots = list(records(data))
+    document = next((root for root in roots if root.type == RT_DOCUMENT and root.version == CONTAINER_VERSION), None)
+    if document is None:
+        return ()
+    mapping = persist_directory(data)
+    ranges: list[tuple[int, int, int]] = []
+    seen: set[int] = set()
+    for index, reference in enumerate(_slide_refs(document), 1):
+        offset = mapping.get(reference)
+        if offset is None or offset in seen or offset >= len(data):
+            continue
+        try:
+            slide = next(records(data, offset))
+        except (InvalidPpt, StopIteration):
+            continue
+        if slide.type != RT_SLIDE:
+            continue
+        seen.add(offset)
+        ranges.append((index, slide.offset, slide.offset + 8 + len(slide.payload)))
+    if ranges:
+        return tuple(ranges)
+    # Synthetic streams may embed slides directly under Document without persist ids.
+    embedded: list[tuple[int, int, int]] = []
+    payload_start = document.offset + 8
+    payload_end = payload_start + len(document.payload)
+    for index, slide in enumerate(
+        (record for record in records(data, payload_start, payload_end) if record.type == RT_SLIDE),
+        1,
+    ):
+        embedded.append((index, slide.offset, slide.offset + 8 + len(slide.payload)))
+    return tuple(embedded)
+
+def _slide_index_for_offset(offset: int, ranges: tuple[tuple[int, int, int], ...]) -> int | None:
+    for slide_index, start, end in ranges:
+        if start <= offset < end:
+            return slide_index
+    return None
+
+def _object_kind_for_code(code: str) -> str:
+    return {
+        "ANIMATION_OMITTED": "animation",
+        "AUDIO_OMITTED": "audio",
+        "VIDEO_OMITTED": "video",
+        "EMBEDDED_OLE_OMITTED": "ole",
+        "CHART_OMITTED": "chart",
+        "DIAGRAM_OR_SMARTART_OMITTED": "diagram",
+        "COMPLEX_FREEFORM_OMITTED": "freeform",
+    }.get(code, "object")
+
+def _unparsed_freeform_locations(
+    data: bytes, ranges: tuple[tuple[int, int, int], ...]
+) -> tuple[LossyFeatureLocation, ...]:
+    locations: list[LossyFeatureLocation] = []
+    for record in _iter_all_records(data):
+        if record.type != RT_OFFICEART_SP_CONTAINER:
+            continue
+        children = list(records(record.payload))
+        sp = next((child for child in children if child.type == 0xF00A and len(child.payload) >= 8), None)
+        fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
+        if sp is None or fopt is None:
+            continue
+        complex_props = _fopt_complex_properties(fopt)
+        if not _uses_custom_geometry(sp.instance, complex_props):
+            continue
+        properties = _fopt_properties(fopt)
+        if _freeform_path(properties, complex_props) is None:
+            locations.append(
+                LossyFeatureLocation(
+                    slide_index=_slide_index_for_offset(record.offset, ranges),
+                    record_type=record.type,
+                    record_offset=record.offset,
+                    object_kind="freeform",
+                )
+            )
+    return tuple(locations)
+
+def detect_lossy_features(powerpoint_document: bytes) -> tuple[LossyFeature, ...]:
+    """Return object-backed loss diagnostics for unsupported/approximated content."""
+    ranges = _slide_byte_ranges(powerpoint_document)
+    buckets: dict[str, dict[str, object]] = {}
+
+    def add(
+        code: str,
+        message: str,
+        *,
+        record_type: int | None = None,
+        record_offset: int | None = None,
+        amount: int = 1,
+        locations: tuple[LossyFeatureLocation, ...] = (),
+    ) -> None:
+        entry = buckets.setdefault(
+            code,
+            {"message": message, "count": 0, "types": set(), "locations": []},
+        )
+        entry["count"] = int(entry["count"]) + amount
+        collected = entry["locations"]
+        assert isinstance(collected, list)
+        if locations:
+            collected.extend(locations)
+        elif record_type is not None and record_offset is not None:
+            collected.append(
+                LossyFeatureLocation(
+                    slide_index=_slide_index_for_offset(record_offset, ranges),
+                    record_type=record_type,
+                    record_offset=record_offset,
+                    object_kind=_object_kind_for_code(code),
+                )
+            )
+        if record_type is not None:
+            types = entry["types"]
+            assert isinstance(types, set)
+            types.add(record_type)
+
+    for record in _iter_all_records(powerpoint_document):
+        mapped = _LOSSY_RECORD_CODES.get(record.type)
+        if mapped is not None:
+            code, message = mapped
+            add(code, message, record_type=record.type, record_offset=record.offset)
+        if record.type in (RT_CSTRING, RT_PROG_BINARY_TAG, RT_BINARY_TAG_DATA_BLOB):
+            if _payload_has_marker(record.payload, _CHART_MARKERS):
+                add(
+                    "CHART_OMITTED",
+                    "chart content was omitted or left as non-editable media",
+                    record_type=record.type,
+                    record_offset=record.offset,
+                )
+            if _payload_has_marker(record.payload, _DIAGRAM_MARKERS):
+                add(
+                    "DIAGRAM_OR_SMARTART_OMITTED",
+                    "diagram/SmartArt content was omitted or left as non-editable media",
+                    record_type=record.type,
+                    record_offset=record.offset,
+                )
+
+    freeform_locations = _unparsed_freeform_locations(powerpoint_document, ranges)
+    if freeform_locations:
+        add(
+            "COMPLEX_FREEFORM_OMITTED",
+            "complex freeform geometry could not be reconstructed as an editable path",
+            amount=len(freeform_locations),
+            locations=freeform_locations,
+        )
+
+    features: list[LossyFeature] = []
+    for code, entry in sorted(buckets.items()):
+        types = entry["types"]
+        assert isinstance(types, set)
+        locations = entry["locations"]
+        assert isinstance(locations, list)
+        # Keep a stable, de-duplicated location list for report consumers.
+        unique: list[LossyFeatureLocation] = []
+        seen: set[tuple[int | None, int, int, str]] = set()
+        for location in locations:
+            key = (
+                location.slide_index,
+                location.record_type,
+                location.record_offset,
+                location.object_kind,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(location)
+        features.append(
+            LossyFeature(
+                code=code,
+                message=str(entry["message"]),
+                count=int(entry["count"]),
+                record_types=tuple(sorted(types)),
+                locations=tuple(unique),
+            )
+        )
+    return tuple(features)

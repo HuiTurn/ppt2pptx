@@ -56,6 +56,14 @@ effects may be approximated. PICT data is preserved, but rendering depends on
 the PPTX consumer. PowerPoint 95 and earlier files use a different record
 format and are deliberately rejected with a clear error.
 
+Unsupported or approximated advanced objects are reported with object-backed
+warning codes such as `ANIMATION_OMITTED`, `AUDIO_OMITTED`, `VIDEO_OMITTED`,
+`EMBEDDED_OLE_OMITTED`, `CHART_OMITTED`, `DIAGRAM_OR_SMARTART_OMITTED`, and
+`COMPLEX_FREEFORM_OMITTED`. Each warning includes `count`, `record_types`, and
+`locations` (`slide_index`, `record_offset`, `object_kind`) when a matching
+object is found. Files without those objects do not receive a blanket
+advanced-feature warning.
+
 ## Development
 
 ```console
@@ -64,12 +72,23 @@ PYTHONPATH=src python -m unittest discover -s tests -v
 python -m build
 ```
 
-The converter itself does not depend on LibreOffice. The real-file regression
-script may use LibreOffice only to verify that generated packages render:
+The converter itself does not depend on LibreOffice or PowerPoint. The real-file
+regression script may use LibreOffice only to verify that generated packages
+render:
 
 ```console
 PYTHONPATH=src python scripts/validate_real_files.py tests/real_samples \
   -o tests/real_output --render --password hello
+```
+
+On Windows with Microsoft PowerPoint installed, bilateral visual regression
+exports per-slide PNGs from the source `.ppt` and converted `.pptx`, then writes
+metrics and diffs:
+
+```console
+PYTHONPATH=src python scripts/make_visual_fixture.py -o tests/fixtures/visual_minimal.ppt
+PYTHONPATH=src python scripts/compare_powerpoint_visual.py \
+  tests/fixtures/visual_minimal.ppt -o tests/visual_evidence/visual_minimal
 ```
 
 ## Specification

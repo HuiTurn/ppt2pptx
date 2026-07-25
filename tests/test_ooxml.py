@@ -33,6 +33,27 @@ class OoxmlTests(unittest.TestCase):
                 self.assertIn("ppt/slideLayouts/slideLayout1.xml", archive.namelist())
                 self.assertIn("ppt/theme/theme1.xml", archive.namelist())
 
+    def test_package_shell_is_strict_enough_for_powerpoint(self):
+        presentation = Presentation(5760, 4320, (Slide((TextBox("Hello", 288, 576, 1152, 288),)),))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shell.pptx"
+            write_pptx(path, presentation)
+            with zipfile.ZipFile(path) as archive:
+                theme = archive.read("ppt/theme/theme1.xml").decode()
+                master = ElementTree.fromstring(archive.read("ppt/slideMasters/slideMaster1.xml"))
+        self.assertEqual(theme.count('<a:fillStyleLst>') + theme.count('<a:bgFillStyleLst>'), 2)
+        self.assertEqual(theme.count("<a:effectStyle>"), 3)
+        self.assertEqual(theme.count('<a:ln w="9525">'), 3)
+        self.assertIn('<a:fillStyleLst>' + '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' * 3, theme)
+        self.assertIn('<a:bgFillStyleLst>' + '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' * 3, theme)
+        ns = {
+            "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+            "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        }
+        layout_id = master.find("p:sldLayoutIdLst/p:sldLayoutId", ns)
+        self.assertGreaterEqual(int(layout_id.attrib["id"]), 2147483648)
+        self.assertIsNotNone(master.find("p:txStyles/p:titleStyle/a:lvl1pPr", ns))
+
     def test_writes_core_properties(self):
         presentation = Presentation(5760, 4320, (), CoreProperties(title="Résumé", creator="Ada", created="2020-01-02T03:04:05Z"))
         with tempfile.TemporaryDirectory() as directory:

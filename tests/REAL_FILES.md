@@ -25,3 +25,21 @@ PYTHONPATH=src python scripts/validate_real_files.py tests/real_samples \
   -o tests/real_output --render --password hello \
   --report tests/real_output/report.json
 ```
+
+## PowerPoint bilateral visual regression
+
+On Windows hosts with Microsoft PowerPoint registered for COM automation, use
+the Office PNG pipeline instead of LibreOffice when measuring visual fidelity:
+
+```console
+PYTHONPATH=src python scripts/make_visual_fixture.py -o tests/fixtures/visual_minimal.ppt
+PYTHONPATH=src python scripts/compare_powerpoint_visual.py \
+  tests/fixtures/visual_minimal.ppt -o tests/visual_evidence/visual_minimal \
+  --width 960 --height 720
+```
+
+The evidence directory contains `reference/`, `actual/`, `diff/`, and
+`report.json` with provider `office`, PowerPoint version, SHA-256 digests,
+hidden-slide manifests, structure counts, conversion warnings, and per-slide
+MAE/RMSE/SSIM metrics. LibreOffice `--render` remains a package-render smoke
+check only; it does not compare against the source `.ppt`.

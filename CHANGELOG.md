@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Attach `locations` (`slide_index`, `record_offset`, `object_kind`) to
+  object-backed lossy-feature warnings, and add a COM-generated animated
+  fixture that asserts `ANIMATION_OMITTED` with slide-scoped locations.
+- Replace the unconditional `ADVANCED_FEATURES_APPROXIMATED` warning with
+  object-backed diagnostics (`ANIMATION_OMITTED`, `AUDIO_OMITTED`,
+  `VIDEO_OMITTED`, `EMBEDDED_OLE_OMITTED`, `CHART_OMITTED`,
+  `DIAGRAM_OR_SMARTART_OMITTED`, `COMPLEX_FREEFORM_OMITTED`) that only appear
+  when matching records or unparsed freeforms are present.
+- Make generated PPTX packages openable in Microsoft PowerPoint by emitting a
+  complete theme `fmtScheme` (three fill/line/effect/background styles),
+  non-empty master text styles, valid `sldLayoutId` values, and group transform
+  stubs on masters/layouts.
+- Add a Windows PowerPoint COM bilateral visual regression tool that exports
+  per-slide reference/actual PNGs, writes MAE/RMSE/SSIM/diff evidence, and
+  records structure counts plus conversion warnings.
+
 ## 0.3.4
 
 - Preserve legacy ShadeScale background gradients, including their angle and
