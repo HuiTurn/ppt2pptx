@@ -157,7 +157,7 @@ def convert(source: str | Path, destination: str | Path | None = None, *, limits
     if source_path.resolve() == output.resolve(): raise UnsafeOutputPathError("destination must not overwrite the source presentation")
     report = ConversionReport(str(source_path), str(output))
     presentation, document_stream = _load(source_path, limits, report, password)
-    for feature in detect_lossy_features(document_stream):
+    for feature in detect_lossy_features(document_stream, presentation.excluded_offsets):
         report.warning(
             feature.code,
             feature.message,

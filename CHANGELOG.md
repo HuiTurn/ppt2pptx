@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Detect legacy PowerPoint tables (regular grids of rectangle autoshape
+  cells + thin border lines) and emit them as editable DrawingML
+  `<a:tbl>` graphic frames instead of flattening them into scattered
+  shapes and text boxes. Cell fill colours and 1-pt black borders
+  (`<a:tblBorders>`) are preserved, and the absorbed cell + border
+  offsets are tracked in `Presentation.excluded_offsets` so they no
+  longer trigger misleading `COMPLEX_FREEFORM_OMITTED` warnings or get
+  re-emitted as duplicate shapes.
 - Attach `locations` (`slide_index`, `record_offset`, `object_kind`) to
   object-backed lossy-feature warnings, and add a COM-generated animated
   fixture that asserts `ANIMATION_OMITTED` with slide-scoped locations.
