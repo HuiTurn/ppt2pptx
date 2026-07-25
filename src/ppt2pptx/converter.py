@@ -9,7 +9,7 @@ from .encryption import decrypt_powerpoint_document
 from .errors import EncryptedPresentationError, InvalidPpt, UnsupportedPptVersionError, UnsafeOutputPathError
 from .ooxml import write_pptx
 from .oleps import read_summary_information
-from .ppt import Presentation, extract_presentation
+from .ppt import Presentation, detect_lossy_features, extract_presentation
 
 @dataclass(frozen=True, slots=True)
 class ConversionResult:
@@ -18,7 +18,7 @@ class ConversionResult:
     slide_count: int
     presentation: Presentation
 
-def _load(source: str | Path, limits: Limits | None = None, report: ConversionReport | None = None, password: str | None = None) -> Presentation:
+def _load(source: str | Path, limits: Limits | None = None, report: ConversionReport | None = None, password: str | None = None) -> tuple[Presentation, bytes]:
     compound = CompoundFile.from_path(source, limits)
     current_user = compound.open_stream("Current User")
     document_stream = compound.open_stream("PowerPoint Document")
@@ -37,10 +37,10 @@ def _load(source: str | Path, limits: Limits | None = None, report: ConversionRe
         except InvalidPpt as exc:
             if report is not None:
                 report.warning("SUMMARY_INFORMATION_MALFORMED", "malformed optional presentation metadata was omitted", reason=str(exc))
-    return presentation
+    return presentation, document_stream
 
 def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: str | None = None) -> dict[str, object]:
-    presentation = _load(source, limits, password=password)
+    presentation, _document = _load(source, limits, password=password)
     return {
         "source": str(source),
         "slide_count": len(presentation.slides),
@@ -156,8 +156,23 @@ def convert(source: str | Path, destination: str | Path | None = None, *, limits
     if output.suffix.casefold() != ".pptx": raise UnsafeOutputPathError("destination must use the .pptx extension")
     if source_path.resolve() == output.resolve(): raise UnsafeOutputPathError("destination must not overwrite the source presentation")
     report = ConversionReport(str(source_path), str(output))
-    presentation = _load(source_path, limits, report, password)
-    report.warning("ADVANCED_FEATURES_APPROXIMATED", "charts, animations, audio/video, and complex freeform master geometry may be omitted or approximated")
+    presentation, document_stream = _load(source_path, limits, report, password)
+    for feature in detect_lossy_features(document_stream):
+        report.warning(
+            feature.code,
+            feature.message,
+            count=feature.count,
+            record_types=list(feature.record_types),
+            locations=[
+                {
+                    "slide_index": location.slide_index,
+                    "record_type": location.record_type,
+                    "record_offset": location.record_offset,
+                    "object_kind": location.object_kind,
+                }
+                for location in feature.locations
+            ],
+        )
     if not presentation.slides: report.warning("NO_SLIDES_FOUND", "no normal slide records could be recovered from the presentation")
     elif any(not (slide.text_boxes or slide.pictures or slide.shapes or slide.header_footer or slide.notes)
              for slide in presentation.slides):

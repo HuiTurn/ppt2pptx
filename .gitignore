@@ -9,4 +9,9 @@ tests/real_samples/
 tests/real_output/
 tests/real_output_complex/
 tests/real_samples_complex/
+tests/visual_evidence/
+tests/fixtures/pptx_probe/
+tests/fixtures/_*.pptx
+tests/fixtures/*.pptx
+tests/fixtures/*.wav
 logs/
