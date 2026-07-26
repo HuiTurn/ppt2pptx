@@ -57,3 +57,6 @@ The controlled `tests/fixtures/visual_ole.ppt` fixture additionally verifies
 that an OLE-to-preview-picture structural difference has one slide-bound
 `EMBEDDED_OLE_OMITTED` diagnostic rather than one warning count per storage
 record.
+The controlled `tests/fixtures/visual_chart.ppt` fixture verifies the same
+object linkage for a legacy `MSGraph.Chart.8` chart and rejects duplicate
+`EMBEDDED_OLE_OMITTED` reporting when `CHART_OMITTED` is the precise category.

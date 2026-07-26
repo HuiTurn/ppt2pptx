@@ -2382,10 +2382,17 @@ def _object_kind_for_code(code: str) -> str:
 def _ole_object_diagnostics(
     data: bytes, ranges: tuple[tuple[int, int, int], ...]
 ) -> tuple[
-    tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]], ...
+    tuple[
+        tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]],
+        ...,
+    ],
+    frozenset[int],
 ]:
     """Collapse OLE storage records into external objects and bind them to slides."""
     all_records = list(_iter_all_records(data))
+    ole_containers = [
+        record for record in all_records if record.type in _OLE_CONTAINER_DIAGNOSTICS
+    ]
     references: dict[int, list[Record]] = {}
     atoms: list[tuple[Record, int, int]] = []
     for record in all_records:
@@ -2400,11 +2407,36 @@ def _ole_object_diagnostics(
     diagnostics: list[
         tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
     ] = []
+    handled_chart_markers: set[int] = set()
     for atom, ole_type, ex_obj_id in atoms:
         code, message, object_kind = _OLE_TYPE_DIAGNOSTICS.get(
             ole_type,
             ("OLE_OBJECT_OMITTED", "OLE object of unknown type was omitted", "ole"),
         )
+        container = next(
+            (
+                item
+                for item in ole_containers
+                if item.offset + 8 <= atom.offset < item.offset + 8 + len(item.payload)
+            ),
+            None,
+        )
+        chart_markers = [
+            item
+            for item in all_records
+            if container is not None
+            and container.offset + 8 <= item.offset < container.offset + 8 + len(container.payload)
+            and item.type in (RT_CSTRING, RT_PROG_BINARY_TAG, RT_BINARY_TAG_DATA_BLOB)
+            and _payload_has_marker(item.payload, _CHART_MARKERS)
+        ]
+        if chart_markers:
+            code = "CHART_OMITTED"
+            message = (
+                "legacy chart data and editability were omitted; "
+                "preview media may be preserved"
+            )
+            object_kind = "chart"
+            handled_chart_markers.update(item.offset for item in chart_markers)
         object_references = references.get(ex_obj_id, [])
         locations = tuple(
             LossyFeatureLocation(
@@ -2424,7 +2456,15 @@ def _ole_object_diagnostics(
                     object_kind=object_kind,
                 ),
             )
-        record_types = tuple(sorted({atom.type, *(item.type for item in object_references)}))
+        record_types = tuple(
+            sorted(
+                {
+                    atom.type,
+                    *(item.type for item in object_references),
+                    *(item.type for item in chart_markers),
+                }
+            )
+        )
         diagnostics.append((code, message, record_types, atom.offset, locations))
 
     atom_offsets = {atom.offset for atom, _ole_type, _ex_obj_id in atoms}
@@ -2476,7 +2516,7 @@ def _ole_object_diagnostics(
                     ),
                 )
             )
-    return tuple(diagnostics)
+    return tuple(diagnostics), frozenset(handled_chart_markers)
 
 
 def _unparsed_freeform_locations(
@@ -2512,6 +2552,9 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
     """Return object-backed loss diagnostics for unsupported/approximated content."""
     ranges = _slide_byte_ranges(powerpoint_document)
     buckets: dict[str, dict[str, object]] = {}
+    ole_diagnostics, handled_chart_markers = _ole_object_diagnostics(
+        powerpoint_document, ranges
+    )
 
     def add(
         code: str,
@@ -2556,7 +2599,10 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
             code, message = mapped
             add(code, message, record_type=record.type, record_offset=record.offset)
         if record.type in (RT_CSTRING, RT_PROG_BINARY_TAG, RT_BINARY_TAG_DATA_BLOB):
-            if _payload_has_marker(record.payload, _CHART_MARKERS):
+            if (
+                record.offset not in handled_chart_markers
+                and _payload_has_marker(record.payload, _CHART_MARKERS)
+            ):
                 add(
                     "CHART_OMITTED",
                     "chart content was omitted or left as non-editable media",
@@ -2571,9 +2617,7 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
                     record_offset=record.offset,
                 )
 
-    for code, message, record_types, record_offset, locations in _ole_object_diagnostics(
-        powerpoint_document, ranges
-    ):
+    for code, message, record_types, record_offset, locations in ole_diagnostics:
         add(
             code,
             message,
