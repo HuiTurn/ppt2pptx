@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve validated embedded `Excel.Sheet.12` package storages as editable
+  OOXML OLE worksheet objects with their cached vector previews.
 - Preserve validated embedded `Equation.DSMT4` MathType storages as editable
   OOXML OLE equation objects with their cached vector previews.
 - Preserve validated embedded `MSGraph.Chart.8` storages as editable OOXML
