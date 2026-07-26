@@ -65,4 +65,5 @@ one legacy animated textbox with no audio. Its static source/output rendering
 must remain identical while the report contains exactly one slide-bound
 `ANIMATION_OMITTED` object that combines the `AnimationInfo` fallback with the
 matching `___PPT10` `ExtTimeNodeContainer` effect instead of missing or
-double-counting either representation.
+double-counting either representation. Its `ParaBuildContainer` must also be
+included in the same warning rather than counted as another animation object.

@@ -20,6 +20,9 @@
 - Parse `___PPT10` binary-tag timing trees, identify actual animation effects
   through `TimePropertyList` effect metadata, and merge each effect with its
   matching legacy `AnimationInfo` fallback by OfficeArt shape ID.
+- Parse `BuildListContainer` text builds, bind `ParaBuildContainer` settings
+  to the matching timing effect by shape/build ID, and include the paragraph
+  build records in that one object diagnostic instead of silently omitting them.
 - Isolate every bilateral PowerPoint export with `DispatchEx`, record the
   exact owned process IDs, retry transient COM disconnects, and disable macros
   and link-update prompts without attaching to or terminating unrelated

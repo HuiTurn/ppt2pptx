@@ -47,10 +47,14 @@ RT_EXTERNAL_OLE_OBJECT_STG = 0x1011
 RT_ANIMATION_INFO = 0x1014
 RT_PROG_BINARY_TAG = 0x138A
 RT_BINARY_TAG_DATA_BLOB = 0x138B
+RT_BUILD_LIST = 0x2B02
+RT_BUILD_ATOM = 0x2B03
 RT_CHART_BUILD = 0x2B04
 RT_CHART_BUILD_ATOM = 0x2B05
 RT_DIAGRAM_BUILD = 0x2B06
 RT_DIAGRAM_BUILD_ATOM = 0x2B07
+RT_PARA_BUILD = 0x2B08
+RT_PARA_BUILD_ATOM = 0x2B09
 RT_ROUNDTRIP_ANIMATION_ATOM = 0x2B0B
 RT_ROUNDTRIP_ANIMATION_HASH_ATOM = 0x2B0D
 RT_TIME_NODE = 0xF127
@@ -2449,6 +2453,10 @@ def _animation_object_diagnostics(
         tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
     ] = []
     handled_legacy: set[int] = set()
+    paragraph_builds: list[
+        tuple[Record, int | None, int, int, tuple[int, ...]]
+    ] = []
+    handled_paragraph_builds: set[int] = set()
     seen_timing_nodes: set[int] = set()
     for blob in (
         record for record in all_records if record.type == RT_BINARY_TAG_DATA_BLOB
@@ -2458,6 +2466,58 @@ def _animation_object_diagnostics(
             top_level = list(records(data, blob_start, blob_start + len(blob.payload)))
         except InvalidPpt:
             continue
+        for build_list in (
+            record for record in top_level if record.type == RT_BUILD_LIST
+        ):
+            for paragraph_build in (
+                record
+                for record in direct_children(build_list)
+                if record.type == RT_PARA_BUILD
+            ):
+                build_children = direct_children(paragraph_build)
+                build_atom = next(
+                    (
+                        child
+                        for child in build_children
+                        if child.type == RT_BUILD_ATOM
+                        and len(child.payload) >= 12
+                    ),
+                    None,
+                )
+                if build_atom is None:
+                    continue
+                paragraph_atom = next(
+                    (
+                        child
+                        for child in build_children
+                        if child.type == RT_PARA_BUILD_ATOM
+                    ),
+                    None,
+                )
+                build_id = struct.unpack_from("<I", build_atom.payload, 4)[0]
+                shape_id = struct.unpack_from("<I", build_atom.payload, 8)[0]
+                paragraph_builds.append(
+                    (
+                        paragraph_build,
+                        _slide_index_for_offset(paragraph_build.offset, ranges),
+                        shape_id,
+                        build_id,
+                        tuple(
+                            sorted(
+                                {
+                                    build_list.type,
+                                    paragraph_build.type,
+                                    build_atom.type,
+                                    *(
+                                        (paragraph_atom.type,)
+                                        if paragraph_atom is not None
+                                        else ()
+                                    ),
+                                }
+                            )
+                        ),
+                    )
+                )
         roots = [
             record
             for record in top_level
@@ -2504,6 +2564,13 @@ def _animation_object_diagnostics(
                 ]
                 if not any(1 <= value <= 6 for value in effect_types):
                     continue
+                group_ids = {
+                    struct.unpack_from("<i", variant.payload, 1)[0]
+                    for variant in variants
+                    if variant.instance == 19
+                    and len(variant.payload) >= 5
+                    and variant.payload[0] == 1
+                }
                 shape_ids = {
                     struct.unpack_from("<I", item.payload, 8)[0]
                     for item in tree(node)
@@ -2528,6 +2595,32 @@ def _animation_object_diagnostics(
                     property_list.type,
                     *(variant.type for variant in variants),
                 }
+                paragraph_match = next(
+                    (
+                        index
+                        for index, (
+                            _paragraph,
+                            build_slide,
+                            build_shape,
+                            build_id,
+                            _types,
+                        ) in enumerate(paragraph_builds)
+                        if index not in handled_paragraph_builds
+                        and build_slide == slide_index
+                        and shape_id is not None
+                        and build_shape == shape_id
+                        and (not group_ids or build_id in group_ids)
+                    ),
+                    None,
+                )
+                message = "shape animation timeline and effect were omitted"
+                if paragraph_match is not None:
+                    handled_paragraph_builds.add(paragraph_match)
+                    record_types.update(paragraph_builds[paragraph_match][4])
+                    message = (
+                        "shape animation timeline, effect, and paragraph build "
+                        "were omitted"
+                    )
                 if time_node is not None:
                     record_types.add(time_node.type)
                 if matched is not None:
@@ -2538,7 +2631,7 @@ def _animation_object_diagnostics(
                 diagnostics.append(
                     (
                         "ANIMATION_OMITTED",
-                        "shape animation timeline and effect were omitted",
+                        message,
                         tuple(sorted(record_types)),
                         node.offset,
                         (
@@ -2551,6 +2644,49 @@ def _animation_object_diagnostics(
                         ),
                     )
                 )
+
+    for index, (paragraph, slide_index, shape_id, _build_id, types) in enumerate(
+        paragraph_builds
+    ):
+        if index in handled_paragraph_builds:
+            continue
+        matched = next(
+            (
+                legacy_index
+                for legacy_index, (
+                    _container,
+                    _atoms,
+                    legacy_slide,
+                    legacy_shape,
+                ) in enumerate(legacy)
+                if legacy_index not in handled_legacy
+                and legacy_slide == slide_index
+                and legacy_shape == shape_id
+            ),
+            None,
+        )
+        record_types = set(types)
+        if matched is not None:
+            handled_legacy.add(matched)
+            legacy_container, atoms, _, _ = legacy[matched]
+            record_types.add(legacy_container.type)
+            record_types.update(atom.type for atom in atoms)
+        diagnostics.append(
+            (
+                "ANIMATION_OMITTED",
+                "text paragraph build animation was omitted",
+                tuple(sorted(record_types)),
+                paragraph.offset,
+                (
+                    LossyFeatureLocation(
+                        slide_index=slide_index,
+                        record_type=paragraph.type,
+                        record_offset=paragraph.offset,
+                        object_kind="animation",
+                    ),
+                ),
+            )
+        )
 
     for index, (container, atoms, slide_index, _shape_id) in enumerate(legacy):
         if index in handled_legacy:
