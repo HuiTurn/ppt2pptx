@@ -34,6 +34,7 @@ RT_ROUNDTRIP_OPAQUE_MAX = 1064
 RT_SOUND_COLLECTION = 0x07E4
 RT_SOUND = 0x07E6
 RT_SOUND_DATA_BLOB = 0x07E7
+RT_EXTERNAL_OBJECT_REF_ATOM = 0x0BC1
 RT_EXTERNAL_OLE_OBJECT_ATOM = 0x0FC3
 RT_EXTERNAL_OLE_EMBED = 0x0FCC
 RT_EXTERNAL_OLE_LINK = 0x0FCE
@@ -2252,13 +2253,31 @@ _LOSSY_RECORD_CODES: dict[int, tuple[str, str]] = {
     RT_EXTERNAL_VIDEO: ("VIDEO_OMITTED", "embedded video was omitted"),
     RT_EXTERNAL_AVI_MOVIE: ("VIDEO_OMITTED", "embedded video was omitted"),
     RT_EXTERNAL_MCI_MOVIE: ("VIDEO_OMITTED", "embedded video was omitted"),
-    RT_EXTERNAL_OLE_OBJECT_ATOM: ("EMBEDDED_OLE_OMITTED", "embedded OLE object was omitted"),
-    RT_EXTERNAL_OLE_EMBED: ("EMBEDDED_OLE_OMITTED", "embedded OLE object was omitted"),
-    RT_EXTERNAL_OLE_LINK: ("EMBEDDED_OLE_OMITTED", "linked OLE object was omitted"),
-    RT_EXTERNAL_OLE_CONTROL: ("EMBEDDED_OLE_OMITTED", "ActiveX/OLE control was omitted"),
-    RT_EXTERNAL_OLE_OBJECT_STG: ("EMBEDDED_OLE_OMITTED", "embedded OLE storage was omitted"),
     RT_DIAGRAM_BUILD: ("DIAGRAM_OR_SMARTART_OMITTED", "diagram/SmartArt build was omitted"),
     RT_DIAGRAM_BUILD_ATOM: ("DIAGRAM_OR_SMARTART_OMITTED", "diagram/SmartArt build was omitted"),
+}
+
+_OLE_TYPE_DIAGNOSTICS = {
+    0: (
+        "EMBEDDED_OLE_OMITTED",
+        "embedded OLE payload and editability were omitted; preview media may be preserved",
+        "ole",
+    ),
+    1: (
+        "LINKED_OLE_OMITTED",
+        "linked OLE behavior was omitted; preview media may be preserved",
+        "linked_ole",
+    ),
+    2: (
+        "ACTIVEX_CONTROL_OMITTED",
+        "ActiveX/OLE control behavior was omitted; preview media may be preserved",
+        "activex_control",
+    ),
+}
+_OLE_CONTAINER_DIAGNOSTICS = {
+    RT_EXTERNAL_OLE_EMBED: _OLE_TYPE_DIAGNOSTICS[0],
+    RT_EXTERNAL_OLE_LINK: _OLE_TYPE_DIAGNOSTICS[1],
+    RT_EXTERNAL_OLE_CONTROL: _OLE_TYPE_DIAGNOSTICS[2],
 }
 
 _CHART_MARKERS = (
@@ -2352,10 +2371,113 @@ def _object_kind_for_code(code: str) -> str:
         "AUDIO_OMITTED": "audio",
         "VIDEO_OMITTED": "video",
         "EMBEDDED_OLE_OMITTED": "ole",
+        "LINKED_OLE_OMITTED": "linked_ole",
+        "ACTIVEX_CONTROL_OMITTED": "activex_control",
         "CHART_OMITTED": "chart",
         "DIAGRAM_OR_SMARTART_OMITTED": "diagram",
         "COMPLEX_FREEFORM_OMITTED": "freeform",
     }.get(code, "object")
+
+
+def _ole_object_diagnostics(
+    data: bytes, ranges: tuple[tuple[int, int, int], ...]
+) -> tuple[
+    tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]], ...
+]:
+    """Collapse OLE storage records into external objects and bind them to slides."""
+    all_records = list(_iter_all_records(data))
+    references: dict[int, list[Record]] = {}
+    atoms: list[tuple[Record, int, int]] = []
+    for record in all_records:
+        if record.type == RT_EXTERNAL_OBJECT_REF_ATOM and len(record.payload) >= 4:
+            ex_obj_id = struct.unpack_from("<I", record.payload)[0]
+            references.setdefault(ex_obj_id, []).append(record)
+        elif record.type == RT_EXTERNAL_OLE_OBJECT_ATOM and len(record.payload) >= 20:
+            ole_type = struct.unpack_from("<I", record.payload, 4)[0]
+            ex_obj_id = struct.unpack_from("<I", record.payload, 8)[0]
+            atoms.append((record, ole_type, ex_obj_id))
+
+    diagnostics: list[
+        tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
+    ] = []
+    for atom, ole_type, ex_obj_id in atoms:
+        code, message, object_kind = _OLE_TYPE_DIAGNOSTICS.get(
+            ole_type,
+            ("OLE_OBJECT_OMITTED", "OLE object of unknown type was omitted", "ole"),
+        )
+        object_references = references.get(ex_obj_id, [])
+        locations = tuple(
+            LossyFeatureLocation(
+                slide_index=_slide_index_for_offset(reference.offset, ranges),
+                record_type=reference.type,
+                record_offset=reference.offset,
+                object_kind=object_kind,
+            )
+            for reference in object_references
+        )
+        if not locations:
+            locations = (
+                LossyFeatureLocation(
+                    slide_index=_slide_index_for_offset(atom.offset, ranges),
+                    record_type=atom.type,
+                    record_offset=atom.offset,
+                    object_kind=object_kind,
+                ),
+            )
+        record_types = tuple(sorted({atom.type, *(item.type for item in object_references)}))
+        diagnostics.append((code, message, record_types, atom.offset, locations))
+
+    atom_offsets = {atom.offset for atom, _ole_type, _ex_obj_id in atoms}
+    fallback_containers = 0
+    for record in all_records:
+        mapped = _OLE_CONTAINER_DIAGNOSTICS.get(record.type)
+        if mapped is None:
+            continue
+        start = record.offset + 8
+        end = start + len(record.payload)
+        if any(start <= atom_offset < end for atom_offset in atom_offsets):
+            continue
+        code, message, object_kind = mapped
+        diagnostics.append(
+            (
+                code,
+                message,
+                (record.type,),
+                record.offset,
+                (
+                    LossyFeatureLocation(
+                        slide_index=_slide_index_for_offset(record.offset, ranges),
+                        record_type=record.type,
+                        record_offset=record.offset,
+                        object_kind=object_kind,
+                    ),
+                ),
+            )
+        )
+        fallback_containers += 1
+
+    if not atoms and fallback_containers == 0:
+        for record in all_records:
+            if record.type != RT_EXTERNAL_OLE_OBJECT_STG:
+                continue
+            diagnostics.append(
+                (
+                    "EMBEDDED_OLE_OMITTED",
+                    "orphaned embedded OLE storage was omitted",
+                    (record.type,),
+                    record.offset,
+                    (
+                        LossyFeatureLocation(
+                            slide_index=_slide_index_for_offset(record.offset, ranges),
+                            record_type=record.type,
+                            record_offset=record.offset,
+                            object_kind="ole",
+                        ),
+                    ),
+                )
+            )
+    return tuple(diagnostics)
+
 
 def _unparsed_freeform_locations(
     data: bytes, ranges: tuple[tuple[int, int, int], ...], exclude: set[int] | None = None
@@ -2399,6 +2521,7 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
         record_offset: int | None = None,
         amount: int = 1,
         locations: tuple[LossyFeatureLocation, ...] = (),
+        record_types: tuple[int, ...] = (),
     ) -> None:
         entry = buckets.setdefault(
             code,
@@ -2422,6 +2545,10 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
             types = entry["types"]
             assert isinstance(types, set)
             types.add(record_type)
+        if record_types:
+            types = entry["types"]
+            assert isinstance(types, set)
+            types.update(record_types)
 
     for record in _iter_all_records(powerpoint_document):
         mapped = _LOSSY_RECORD_CODES.get(record.type)
@@ -2443,6 +2570,18 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
                     record_type=record.type,
                     record_offset=record.offset,
                 )
+
+    for code, message, record_types, record_offset, locations in _ole_object_diagnostics(
+        powerpoint_document, ranges
+    ):
+        add(
+            code,
+            message,
+            record_offset=record_offset,
+            amount=1,
+            locations=locations,
+            record_types=record_types,
+        )
 
     freeform_locations = _unparsed_freeform_locations(powerpoint_document, ranges, exclude_offsets)
     if freeform_locations:
