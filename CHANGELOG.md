@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve validated embedded `Equation.DSMT4` MathType storages as editable
+  OOXML OLE equation objects with their cached vector previews.
 - Preserve validated embedded `MSGraph.Chart.8` storages as editable OOXML
   OLE chart objects with their cached vector previews, instead of emitting
   preview-only pictures and `CHART_OMITTED`.

@@ -62,13 +62,17 @@ legacy `MSGraph.Chart.8` compressed `ExOleObjStg` is validated, embedded as an
 editable OOXML OLE object, and paired with its cached vector preview. Source
 and output both expose one OLE object in PowerPoint, render pixel-identically,
 and emit no loss warning.
+The controlled `tests/fixtures/visual_equation_ole.ppt` fixture performs the
+same structural and pixel-exact assertions for an `Equation.DSMT4` MathType
+storage copied from the pinned Apache POI `37625.ppt` source, without
+activating the equation.
 Apache POI `test-data/slideshow/37625.ppt` additionally exercises incremental
 save history: 189 stored `ExternalOleObjectAtom` records collapse to the 10
 objects referenced by current slide persist ranges (8 charts and 2 other OLE
-objects), matching PowerPoint's source structure census. All 8 chart storages
-round-trip byte-for-byte as editable OLE objects; only the 2 unsupported
-non-chart OLE objects retain `EMBEDDED_OLE_OMITTED` diagnostics, with identical
-29-slide bilateral visual metrics and no hard differences.
+objects), matching PowerPoint's source structure census. All 8 chart and 2
+MathType equation storages round-trip byte-for-byte as editable OLE objects,
+removing both `CHART_OMITTED` and `EMBEDDED_OLE_OMITTED` while retaining
+identical 29-slide bilateral visual metrics and no hard differences.
 The same file contains 14 saved `DocumentContainer` revisions; the latest one
 must produce all 29 current slides rather than the 28 listed by the first
 historical revision.
