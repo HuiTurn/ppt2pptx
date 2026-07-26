@@ -98,6 +98,14 @@ class PowerPointVisualRegressionTests(unittest.TestCase):
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["provider"], "office")
             self.assertTrue(report["powerpoint_version"])
+            self.assertEqual(report["powerpoint_instances"]["dispatch"], "DispatchEx")
+            self.assertIsInstance(report["powerpoint_instances"]["reference_pid"], int)
+            self.assertIsInstance(report["powerpoint_instances"]["actual_pid"], int)
+            self.assertEqual(
+                report["powerpoint_versions"]["reference"],
+                report["powerpoint_version"],
+            )
+            self.assertTrue(report["powerpoint_versions"]["actual"])
             self.assertEqual(report["slide_count_source"], 2)
             self.assertEqual(report["slide_count_output"], 2)
             self.assertEqual(report["hard_differences"], [])
@@ -135,7 +143,6 @@ class PowerPointVisualRegressionTests(unittest.TestCase):
         from ppt2pptx import convert
         import pythoncom
         import win32com.client
-        import time
 
         with tempfile.TemporaryDirectory(prefix="ppt2pptx-reopen-") as tmp:
             pptx = Path(tmp) / "out.pptx"
@@ -145,41 +152,45 @@ class PowerPointVisualRegressionTests(unittest.TestCase):
             pythoncom.CoInitialize()
             app = None
             presentation = None
-            last_error: Exception | None = None
-            for attempt in range(5):
+            try:
+                app = win32com.client.DispatchEx("PowerPoint.Application")
                 try:
-                    app = win32com.client.gencache.EnsureDispatch("PowerPoint.Application")
-                    try:
-                        app.Visible = True
-                    except Exception:
-                        pass
-                    try:
-                        presentation = app.Presentations.Open(str(pptx), True, False, False)
-                    except Exception:
-                        presentation = app.Presentations.Open(str(pptx), True, False, True)
-                    self.assertEqual(int(presentation.Slides.Count), 2)
-                    last_error = None
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    time.sleep(2)
-            if last_error is not None:
-                raise last_error
-            # Do not save.
-            try:
-                if presentation is not None:
-                    presentation.Close()
-            except Exception:
-                pass
-            try:
-                if app is not None:
-                    app.Quit()
-            except Exception:
-                pass
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+                    app.Visible = True
+                except Exception:
+                    pass
+                try:
+                    app.DisplayAlerts = 1  # ppAlertsNone
+                except Exception:
+                    pass
+                try:
+                    app.AutomationSecurity = 3
+                except Exception:
+                    pass
+                try:
+                    app.AskToUpdateLinks = False
+                except Exception:
+                    pass
+                try:
+                    presentation = app.Presentations.Open(str(pptx), True, False, False)
+                except Exception:
+                    presentation = app.Presentations.Open(str(pptx), True, False, True)
+                self.assertEqual(int(presentation.Slides.Count), 2)
+            finally:
+                # Do not save.
+                try:
+                    if presentation is not None:
+                        presentation.Close()
+                except Exception:
+                    pass
+                try:
+                    if app is not None:
+                        app.Quit()
+                except Exception:
+                    pass
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":

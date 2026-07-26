@@ -12,9 +12,12 @@ import sys
 try:
     import pythoncom
     import win32com.client
-    from win32com.client import constants
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(f"pywin32 is required: {exc}") from exc
+
+PP_ALERTS_NONE = 1
+PP_LAYOUT_BLANK = 12
+PP_SAVE_AS_PRESENTATION = 1
 
 
 def make_fixture(destination: Path) -> dict[str, object]:
@@ -24,7 +27,7 @@ def make_fixture(destination: Path) -> dict[str, object]:
         destination.unlink()
 
     pythoncom.CoInitialize()
-    app = win32com.client.gencache.EnsureDispatch("PowerPoint.Application")
+    app = win32com.client.DispatchEx("PowerPoint.Application")
     presentation = None
     try:
         # Recent PowerPoint builds reject Visible=False for some automation hosts.
@@ -33,14 +36,22 @@ def make_fixture(destination: Path) -> dict[str, object]:
         except Exception:
             pass
         try:
-            app.DisplayAlerts = constants.ppAlertsNone
+            app.DisplayAlerts = PP_ALERTS_NONE
+        except Exception:
+            pass
+        try:
+            app.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
+        except Exception:
+            pass
+        try:
+            app.AskToUpdateLinks = False
         except Exception:
             pass
         presentation = app.Presentations.Add()
         presentation.PageSetup.SlideWidth = 720
         presentation.PageSetup.SlideHeight = 540
 
-        slide1 = presentation.Slides.Add(1, constants.ppLayoutBlank)
+        slide1 = presentation.Slides.Add(1, PP_LAYOUT_BLANK)
         box = slide1.Shapes.AddTextbox(1, 72, 72, 500, 80)
         text = box.TextFrame.TextRange
         text.Text = "ppt2pptx visual fixture"
@@ -54,7 +65,7 @@ def make_fixture(destination: Path) -> dict[str, object]:
             # Some hosts reject early-bound color assignment; geometry alone is enough.
             pass
 
-        slide2 = presentation.Slides.Add(2, constants.ppLayoutBlank)
+        slide2 = presentation.Slides.Add(2, PP_LAYOUT_BLANK)
         box2 = slide2.Shapes.AddTextbox(1, 72, 200, 400, 60)
         text2 = box2.TextFrame.TextRange
         text2.Text = "second slide"
@@ -62,7 +73,7 @@ def make_fixture(destination: Path) -> dict[str, object]:
         text2.Font.Size = 28
         slide2.SlideShowTransition.Hidden = False
 
-        presentation.SaveAs(str(destination), constants.ppSaveAsPresentation)
+        presentation.SaveAs(str(destination), PP_SAVE_AS_PRESENTATION)
         version = str(getattr(app, "Version", "unknown"))
         return {
             "path": str(destination),

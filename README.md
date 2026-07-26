@@ -86,7 +86,9 @@ PYTHONPATH=src python scripts/validate_real_files.py tests/real_samples \
 
 On Windows with Microsoft PowerPoint installed, bilateral visual regression
 exports per-slide PNGs from the source `.ppt` and converted `.pptx`, then writes
-metrics and diffs:
+metrics and diffs. Each side runs in an isolated `DispatchEx` instance; the
+report records the owned process IDs, and cleanup never targets unrelated
+PowerPoint processes:
 
 ```console
 PYTHONPATH=src python scripts/make_visual_fixture.py -o tests/fixtures/visual_minimal.ppt
