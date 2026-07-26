@@ -11,6 +11,10 @@ import unittest
 
 from ppt2pptx import convert
 from ppt2pptx.ppt import (
+    RT_BUILD_ATOM,
+    RT_BUILD_LIST,
+    RT_CHART_BUILD,
+    RT_CHART_BUILD_ATOM,
     RT_CSTRING,
     RT_EXTERNAL_OBJECT_REF_ATOM,
     RT_EXTERNAL_OLE_EMBED,
@@ -21,6 +25,7 @@ from ppt2pptx.ppt import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "visual_chart.ppt"
+ANIMATED_FIXTURE = ROOT / "tests" / "fixtures" / "visual_chart_animation.ppt"
 COMPARE = ROOT / "scripts" / "compare_powerpoint_visual.py"
 
 
@@ -105,6 +110,32 @@ class ChartDiagnosticTests(unittest.TestCase):
         self.assertEqual(warning["locations"][0]["record_type"], RT_EXTERNAL_OBJECT_REF_ATOM)
         self.assertEqual(warning["locations"][0]["object_kind"], "chart")
 
+    def test_chart_build_records_bind_to_animation_effects(self):
+        self.assertTrue(
+            ANIMATED_FIXTURE.is_file(),
+            f"missing fixture: {ANIMATED_FIXTURE}",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = convert(ANIMATED_FIXTURE, Path(directory) / "animated.pptx")
+
+        warnings = {item["code"]: item for item in result.report.warnings}
+        self.assertEqual(set(warnings), {"ANIMATION_OMITTED", "CHART_OMITTED"})
+        animation = warnings["ANIMATION_OMITTED"]
+        self.assertEqual(animation["count"], 3)
+        self.assertTrue(
+            {
+                RT_BUILD_LIST,
+                RT_BUILD_ATOM,
+                RT_CHART_BUILD,
+                RT_CHART_BUILD_ATOM,
+            }.issubset(animation["record_types"])
+        )
+        self.assertEqual(len(animation["locations"]), 3)
+        self.assertTrue(
+            all(item["slide_index"] == 1 for item in animation["locations"])
+        )
+        self.assertEqual(warnings["CHART_OMITTED"]["count"], 1)
+
 
 @unittest.skipUnless(powerpoint_available(), "Microsoft PowerPoint COM is required")
 class ChartPowerPointVisualTests(unittest.TestCase):
@@ -159,6 +190,54 @@ class ChartPowerPointVisualTests(unittest.TestCase):
             warning["locations"][0]["record_type"],
             RT_EXTERNAL_OBJECT_REF_ATOM,
         )
+
+    def test_animated_chart_has_exact_static_visual_and_build_diagnostic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory) / "evidence"
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(ROOT / "src")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(COMPARE),
+                    str(ANIMATED_FIXTURE),
+                    "-o",
+                    str(evidence),
+                    "--width",
+                    "960",
+                    "--height",
+                    "720",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=180,
+                check=False,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+            )
+            report = json.loads((evidence / "report.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(report["provider"], "office")
+        self.assertEqual(report["hard_differences"], [])
+        self.assertEqual(report["summary"]["mean_mae"], 0.0)
+        self.assertEqual(report["summary"]["mean_rmse"], 0.0)
+        self.assertEqual(report["summary"]["mean_changed_pixel_ratio"], 0.0)
+        self.assertEqual(report["summary"]["mean_ssim"], 1.0)
+        warnings = {
+            item["code"]: item
+            for item in report["conversion_warnings"]["warnings"]
+        }
+        self.assertEqual(set(warnings), {"ANIMATION_OMITTED", "CHART_OMITTED"})
+        self.assertEqual(warnings["ANIMATION_OMITTED"]["count"], 3)
+        self.assertIn(
+            RT_CHART_BUILD_ATOM,
+            warnings["ANIMATION_OMITTED"]["record_types"],
+        )
+        self.assertEqual(warnings["CHART_OMITTED"]["count"], 1)
 
 
 if __name__ == "__main__":

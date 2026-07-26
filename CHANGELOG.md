@@ -23,6 +23,9 @@
 - Parse `BuildListContainer` text builds, bind `ParaBuildContainer` settings
   to the matching timing effect by shape/build ID, and include the paragraph
   build records in that one object diagnostic instead of silently omitting them.
+- Bind `ChartBuildContainer` and `ChartBuildAtom` settings to the matching
+  chart animation effects by shape/build ID, while retaining the separate
+  chart-editability diagnostic for the same legacy MS Graph object.
 - Isolate every bilateral PowerPoint export with `DispatchEx`, record the
   exact owned process IDs, retry transient COM disconnects, and disable macros
   and link-update prompts without attaching to or terminating unrelated
