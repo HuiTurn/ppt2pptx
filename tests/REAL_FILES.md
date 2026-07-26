@@ -76,3 +76,8 @@ PowerPoint-saved SmartArt `metroBlob` produces exactly one slide-bound
 `DIAGRAM_OR_SMARTART_OMITTED` warning. The Office census must show one source
 SmartArt object becoming one output picture, and the bilateral metrics keep
 that preview conversion within the recorded visual bounds.
+The controlled `tests/fixtures/visual_video.ppt` fixture verifies that a
+PowerPoint-saved poster picture carrying `II_MediaAction` produces exactly one
+slide-bound `MEDIA_ACTION_OMITTED` warning. The Office census must show media
+`1 -> 0` while picture count remains `1 -> 1`; the static poster rendering must
+remain pixel-identical.

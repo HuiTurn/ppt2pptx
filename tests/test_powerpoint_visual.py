@@ -149,6 +149,7 @@ class PowerPointVisualRegressionTests(unittest.TestCase):
                     "ANIMATION_OMITTED",
                     "AUDIO_OMITTED",
                     "VIDEO_OMITTED",
+                    "MEDIA_ACTION_OMITTED",
                     "EMBEDDED_OLE_OMITTED",
                     "CHART_OMITTED",
                     "DIAGRAM_OR_SMARTART_OMITTED",

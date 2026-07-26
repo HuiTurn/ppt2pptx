@@ -255,6 +255,13 @@ def _com_bool(value: Any) -> bool:
         return bool(value)
 
 
+def _shape_action(shape: Any, trigger: int) -> int:
+    try:
+        return int(shape.ActionSettings(trigger).Action)
+    except Exception:
+        return 0
+
+
 def _office_slide_structure(slide: Any, index: int) -> dict[str, int]:
     counts = {field: 0 for field in _OFFICE_STRUCTURE_FIELDS}
     counts["index"] = index
@@ -278,6 +285,13 @@ def _office_slide_structure(slide: Any, index: int) -> dict[str, int]:
         if shape_type in (7, 10, 12):  # embedded/linked OLE and OLE controls
             counts["ole_count"] += 1
         if shape_type == 16:  # msoMedia
+            counts["media_count"] += 1
+        elif any(
+            _shape_action(shape, trigger) == 12  # ppActionPlay
+            for trigger in (1, 2)  # ppMouseClick, ppMouseOver
+        ):
+            # Newer media saved as .ppt reopens as a preview picture carrying
+            # an II_MediaAction instead of exposing msoMedia.
             counts["media_count"] += 1
         try:
             if _com_bool(shape.HasTable):

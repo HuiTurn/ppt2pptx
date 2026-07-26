@@ -43,6 +43,8 @@ RT_EXTERNAL_OLE_EMBED = 0x0FCC
 RT_EXTERNAL_OLE_LINK = 0x0FCE
 RT_EXTERNAL_OLE_CONTROL = 0x0FEE
 RT_ANIMATION_INFO_ATOM = 0x0FF1
+RT_INTERACTIVE_INFO = 0x0FF2
+RT_INTERACTIVE_INFO_ATOM = 0x0FF3
 RT_EXTERNAL_VIDEO = 0x1005
 RT_EXTERNAL_AVI_MOVIE = 0x1006
 RT_EXTERNAL_MCI_MOVIE = 0x1007
@@ -2374,6 +2376,7 @@ def _object_kind_for_code(code: str) -> str:
         "ANIMATION_OMITTED": "animation",
         "AUDIO_OMITTED": "audio",
         "VIDEO_OMITTED": "video",
+        "MEDIA_ACTION_OMITTED": "media",
         "EMBEDDED_OLE_OMITTED": "ole",
         "LINKED_OLE_OMITTED": "linked_ole",
         "ACTIVEX_CONTROL_OMITTED": "activex_control",
@@ -2381,6 +2384,75 @@ def _object_kind_for_code(code: str) -> str:
         "DIAGRAM_OR_SMARTART_OMITTED": "diagram",
         "COMPLEX_FREEFORM_OMITTED": "freeform",
     }.get(code, "object")
+
+
+def _media_action_object_diagnostics(
+    data: bytes, ranges: tuple[tuple[int, int, int], ...]
+) -> tuple[
+    tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]],
+    ...,
+]:
+    """Report one object for each shape whose media playback action is lost."""
+    diagnostics: list[
+        tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
+    ] = []
+
+    def direct_children(record: Record) -> list[Record]:
+        if record.version != CONTAINER_VERSION:
+            return []
+        start = record.offset + 8
+        return list(records(data, start, start + len(record.payload)))
+
+    for shape in (
+        record
+        for record in _iter_all_records(data)
+        if record.type == RT_OFFICEART_SP_CONTAINER
+    ):
+        media_records: list[tuple[Record, Record, Record]] = []
+        for child in direct_children(shape):
+            if child.type != RT_OFFICEART_CLIENT_DATA:
+                continue
+            for interactive in direct_children(child):
+                if interactive.type != RT_INTERACTIVE_INFO:
+                    continue
+                atom = next(
+                    (
+                        candidate
+                        for candidate in direct_children(interactive)
+                        if candidate.type == RT_INTERACTIVE_INFO_ATOM
+                        and len(candidate.payload) >= 9
+                        # MS-PPT InteractiveInfoActionEnum.II_MediaAction
+                        and candidate.payload[8] == 0x06
+                    ),
+                    None,
+                )
+                if atom is not None:
+                    media_records.append((child, interactive, atom))
+        if not media_records:
+            continue
+        client_data, interactive, atom = media_records[0]
+        diagnostics.append(
+            (
+                "MEDIA_ACTION_OMITTED",
+                "media playback behavior was omitted; preview media may be preserved",
+                (
+                    shape.type,
+                    client_data.type,
+                    interactive.type,
+                    atom.type,
+                ),
+                atom.offset,
+                (
+                    LossyFeatureLocation(
+                        slide_index=_slide_index_for_offset(shape.offset, ranges),
+                        record_type=atom.type,
+                        record_offset=atom.offset,
+                        object_kind="media",
+                    ),
+                ),
+            )
+        )
+    return tuple(diagnostics)
 
 
 def _animation_object_diagnostics(
@@ -3089,6 +3161,9 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
     animation_diagnostics = _animation_object_diagnostics(
         powerpoint_document, ranges
     )
+    media_action_diagnostics = _media_action_object_diagnostics(
+        powerpoint_document, ranges
+    )
     ole_diagnostics, handled_chart_markers = _ole_object_diagnostics(
         powerpoint_document, ranges
     )
@@ -3163,6 +3238,16 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
                 )
 
     for code, message, record_types, record_offset, locations in animation_diagnostics:
+        add(
+            code,
+            message,
+            record_offset=record_offset,
+            amount=1,
+            locations=locations,
+            record_types=record_types,
+        )
+
+    for code, message, record_types, record_offset, locations in media_action_diagnostics:
         add(
             code,
             message,
