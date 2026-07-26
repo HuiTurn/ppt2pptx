@@ -14,6 +14,10 @@ from ppt2pptx.ppt import (
     RT_ANIMATION_INFO,
     RT_ANIMATION_INFO_ATOM,
     RT_BINARY_TAG_DATA_BLOB,
+    RT_BUILD_ATOM,
+    RT_BUILD_LIST,
+    RT_PARA_BUILD,
+    RT_PARA_BUILD_ATOM,
     RT_TIME_EXT_TIME_NODE,
     RT_TIME_NODE,
     RT_TIME_PROPERTY_LIST,
@@ -57,7 +61,23 @@ def timeline_document() -> bytes:
         time_node + properties + visual_shape,
         instance=1,
     )
-    extension = rec(RT_BINARY_TAG_DATA_BLOB, effect, version=0)
+    build_atom = rec(
+        RT_BUILD_ATOM,
+        struct.pack("<IIII", 1, 0, 42, 1),
+        version=0,
+    )
+    paragraph_atom = rec(
+        RT_PARA_BUILD_ATOM,
+        struct.pack("<IIII", 3, 1, 0x00010000, 0),
+        version=1,
+    )
+    paragraph_build = rec(RT_PARA_BUILD, build_atom + paragraph_atom)
+    build_list = rec(RT_BUILD_LIST, paragraph_build)
+    extension = rec(
+        RT_BINARY_TAG_DATA_BLOB,
+        effect + build_list,
+        version=0,
+    )
     return rec(1000, rec(1006, extension))
 
 
@@ -111,6 +131,10 @@ class AnimationDiagnosticTests(unittest.TestCase):
         self.assertEqual(
             feature.record_types,
             (
+                RT_BUILD_LIST,
+                RT_BUILD_ATOM,
+                RT_PARA_BUILD,
+                RT_PARA_BUILD_ATOM,
                 RT_TIME_NODE,
                 RT_TIME_PROPERTY_LIST,
                 RT_TIME_VARIANT,
@@ -135,6 +159,10 @@ class AnimationDiagnosticTests(unittest.TestCase):
             [
                 RT_ANIMATION_INFO_ATOM,
                 RT_ANIMATION_INFO,
+                RT_BUILD_LIST,
+                RT_BUILD_ATOM,
+                RT_PARA_BUILD,
+                RT_PARA_BUILD_ATOM,
                 RT_TIME_NODE,
                 RT_TIME_PROPERTY_LIST,
                 RT_TIME_VARIANT,
