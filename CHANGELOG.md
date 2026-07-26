@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve validated embedded `MSGraph.Chart.8` storages as editable OOXML
+  OLE chart objects with their cached vector previews, instead of emitting
+  preview-only pictures and `CHART_OMITTED`.
 - Map OfficeArt shape type 19 to DrawingML's native editable `arc` preset,
   instead of treating its adjustment vertices as a partial custom Bézier path.
 - Preserve the master/slide shape stacking boundary when flattening legacy

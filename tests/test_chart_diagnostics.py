@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 from ppt2pptx import convert
 from ppt2pptx.ppt import (
@@ -164,19 +165,31 @@ class ChartDiagnosticTests(unittest.TestCase):
         self.assertEqual(feature.locations[0].record_type, RT_EXTERNAL_OBJECT_REF_ATOM)
         self.assertEqual(feature.locations[0].object_kind, "chart")
 
-    def test_controlled_fixture_reports_chart_without_duplicate_ole_warning(self):
+    def test_controlled_fixture_preserves_editable_chart_ole_storage(self):
         self.assertTrue(FIXTURE.is_file(), f"missing fixture: {FIXTURE}")
         with tempfile.TemporaryDirectory() as directory:
             result = convert(FIXTURE, Path(directory) / "visual_chart.pptx")
+            with zipfile.ZipFile(result.output_path) as archive:
+                slide_xml = archive.read("ppt/slides/slide1.xml").decode()
+                relationships = archive.read(
+                    "ppt/slides/_rels/slide1.xml.rels"
+                ).decode()
+                embedded = archive.read("ppt/embeddings/oleObject1.bin")
 
-        warnings = {item["code"]: item for item in result.report.warnings}
-        self.assertEqual(set(warnings), {"CHART_OMITTED"})
-        warning = warnings["CHART_OMITTED"]
-        self.assertEqual(warning["count"], 1)
-        self.assertEqual(len(warning["locations"]), 1)
-        self.assertEqual(warning["locations"][0]["slide_index"], 1)
-        self.assertEqual(warning["locations"][0]["record_type"], RT_EXTERNAL_OBJECT_REF_ATOM)
-        self.assertEqual(warning["locations"][0]["object_kind"], "chart")
+        self.assertEqual(result.report.warnings, [])
+        self.assertEqual(result.presentation.preserved_external_object_ids, {2})
+        picture = result.presentation.slides[0].pictures[0]
+        self.assertEqual(picture.external_object_id, 2)
+        self.assertEqual(picture.embedded_object_prog_id, "MSGraph.Chart.8")
+        self.assertEqual(picture.embedded_object_name, "Chart")
+        self.assertEqual(embedded, picture.embedded_object_data)
+        self.assertTrue(embedded.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"))
+        self.assertIn(b"MSGraph.Chart.8", embedded)
+        self.assertIn("<p:oleObj", slide_xml)
+        self.assertIn('progId="MSGraph.Chart.8"', slide_xml)
+        self.assertIn("<p:embed", slide_xml)
+        self.assertIn("<p:pic>", slide_xml)
+        self.assertIn("/relationships/oleObject", relationships)
 
     def test_chart_build_records_bind_to_animation_effects(self):
         self.assertTrue(
@@ -187,7 +200,7 @@ class ChartDiagnosticTests(unittest.TestCase):
             result = convert(ANIMATED_FIXTURE, Path(directory) / "animated.pptx")
 
         warnings = {item["code"]: item for item in result.report.warnings}
-        self.assertEqual(set(warnings), {"ANIMATION_OMITTED", "CHART_OMITTED"})
+        self.assertEqual(set(warnings), {"ANIMATION_OMITTED"})
         animation = warnings["ANIMATION_OMITTED"]
         self.assertEqual(animation["count"], 3)
         self.assertTrue(
@@ -202,12 +215,11 @@ class ChartDiagnosticTests(unittest.TestCase):
         self.assertTrue(
             all(item["slide_index"] == 1 for item in animation["locations"])
         )
-        self.assertEqual(warnings["CHART_OMITTED"]["count"], 1)
 
 
 @unittest.skipUnless(powerpoint_available(), "Microsoft PowerPoint COM is required")
 class ChartPowerPointVisualTests(unittest.TestCase):
-    def test_legacy_chart_preview_has_exact_visual_and_object_diagnostic(self):
+    def test_legacy_chart_ole_is_editable_and_pixel_exact(self):
         with tempfile.TemporaryDirectory() as directory:
             evidence = Path(directory) / "evidence"
             env = os.environ.copy()
@@ -244,19 +256,11 @@ class ChartPowerPointVisualTests(unittest.TestCase):
         self.assertEqual(report["summary"]["mean_changed_pixel_ratio"], 0.0)
         self.assertEqual(report["summary"]["mean_ssim"], 1.0)
         self.assertEqual(report["office_structure"]["source"]["ole_count"], 1)
-        self.assertEqual(report["office_structure"]["output"]["ole_count"], 0)
-        self.assertEqual(report["office_structure"]["output"]["picture_count"], 1)
-        warnings = {
-            item["code"]: item
-            for item in report["conversion_warnings"]["warnings"]
-        }
-        self.assertEqual(set(warnings), {"CHART_OMITTED"})
-        warning = warnings["CHART_OMITTED"]
-        self.assertEqual(warning["count"], 1)
-        self.assertEqual(warning["locations"][0]["slide_index"], 1)
+        self.assertEqual(report["office_structure"]["output"]["ole_count"], 1)
+        self.assertEqual(report["office_structure"]["output"]["picture_count"], 0)
         self.assertEqual(
-            warning["locations"][0]["record_type"],
-            RT_EXTERNAL_OBJECT_REF_ATOM,
+            report["conversion_warnings"]["warnings"],
+            [],
         )
 
     def test_animated_chart_has_exact_static_visual_and_build_diagnostic(self):
@@ -299,13 +303,13 @@ class ChartPowerPointVisualTests(unittest.TestCase):
             item["code"]: item
             for item in report["conversion_warnings"]["warnings"]
         }
-        self.assertEqual(set(warnings), {"ANIMATION_OMITTED", "CHART_OMITTED"})
+        self.assertEqual(set(warnings), {"ANIMATION_OMITTED"})
         self.assertEqual(warnings["ANIMATION_OMITTED"]["count"], 3)
         self.assertIn(
             RT_CHART_BUILD_ATOM,
             warnings["ANIMATION_OMITTED"]["record_types"],
         )
-        self.assertEqual(warnings["CHART_OMITTED"]["count"], 1)
+        self.assertEqual(report["office_structure"]["output"]["ole_count"], 1)
 
 
 if __name__ == "__main__":
