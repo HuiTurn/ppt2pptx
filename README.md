@@ -88,7 +88,9 @@ On Windows with Microsoft PowerPoint installed, bilateral visual regression
 exports per-slide PNGs from the source `.ppt` and converted `.pptx`, then writes
 metrics and diffs. Each side runs in an isolated `DispatchEx` instance; the
 report records the owned process IDs, and cleanup never targets unrelated
-PowerPoint processes:
+PowerPoint processes. It also records PowerPoint's source/output object counts
+and per-slide structure differences for text, pictures, tables, charts, groups,
+OLE/media, comments, and speaker notes:
 
 ```console
 PYTHONPATH=src python scripts/make_visual_fixture.py -o tests/fixtures/visual_minimal.ppt

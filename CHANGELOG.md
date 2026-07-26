@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Record PowerPoint's own source/output structure census in bilateral reports,
+  including per-slide text, picture, table, chart, group, OLE, media, comment,
+  and speaker-note counts with object-category mismatch locations.
+- Bind sparse speaker notes by `NotesAtom.slideId`, and emit schema-valid Notes
+  Masters with `notesStyle`, complete group transforms, and a dedicated theme
+  part so PowerPoint reopens presentations containing notes.
 - Isolate every bilateral PowerPoint export with `DispatchEx`, record the
   exact owned process IDs, retry transient COM disconnects, and disable macros
   and link-update prompts without attaching to or terminating unrelated

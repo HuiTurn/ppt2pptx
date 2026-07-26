@@ -233,6 +233,117 @@ def _slide_pixel_size(presentation: Any, width: int | None, height: int | None) 
     return px_w, px_h
 
 
+_OFFICE_STRUCTURE_FIELDS = (
+    "shape_count",
+    "text_shape_count",
+    "picture_count",
+    "table_count",
+    "chart_count",
+    "group_count",
+    "ole_count",
+    "media_count",
+    "comment_count",
+    "note_text_count",
+)
+
+
+def _com_bool(value: Any) -> bool:
+    try:
+        return bool(int(value))
+    except (TypeError, ValueError):
+        return bool(value)
+
+
+def _office_slide_structure(slide: Any, index: int) -> dict[str, int]:
+    counts = {field: 0 for field in _OFFICE_STRUCTURE_FIELDS}
+    counts["index"] = index
+    shapes = slide.Shapes
+    counts["shape_count"] = int(shapes.Count)
+    for shape_index in range(1, counts["shape_count"] + 1):
+        shape = shapes(shape_index)
+        try:
+            shape_type = int(shape.Type)
+        except Exception:
+            shape_type = 0
+        try:
+            if _com_bool(shape.HasTextFrame) and _com_bool(shape.TextFrame.HasText):
+                counts["text_shape_count"] += 1
+        except Exception:
+            pass
+        if shape_type in (11, 13):  # msoLinkedPicture, msoPicture
+            counts["picture_count"] += 1
+        if shape_type == 6:  # msoGroup
+            counts["group_count"] += 1
+        if shape_type in (7, 10, 12):  # embedded/linked OLE and OLE controls
+            counts["ole_count"] += 1
+        if shape_type == 16:  # msoMedia
+            counts["media_count"] += 1
+        try:
+            if _com_bool(shape.HasTable):
+                counts["table_count"] += 1
+        except Exception:
+            pass
+        try:
+            if _com_bool(shape.HasChart):
+                counts["chart_count"] += 1
+        except Exception:
+            pass
+    try:
+        counts["comment_count"] = int(slide.Comments.Count)
+    except Exception:
+        pass
+    try:
+        note_shapes = slide.NotesPage.Shapes
+        for shape_index in range(1, int(note_shapes.Count) + 1):
+            shape = note_shapes(shape_index)
+            try:
+                if int(shape.Type) != 14:  # msoPlaceholder
+                    continue
+                if int(shape.PlaceholderFormat.Type) != 2:  # ppPlaceholderBody
+                    continue
+                text = str(shape.TextFrame.TextRange.Text).strip()
+                if text:
+                    counts["note_text_count"] += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return counts
+
+
+def _office_presentation_structure(presentation: Any) -> dict[str, Any]:
+    slides = [
+        _office_slide_structure(presentation.Slides(index), index)
+        for index in range(1, int(presentation.Slides.Count) + 1)
+    ]
+    return {
+        field: sum(slide[field] for slide in slides)
+        for field in _OFFICE_STRUCTURE_FIELDS
+    } | {"slides": slides}
+
+
+def _office_structure_differences(
+    reference: dict[str, Any], actual: dict[str, Any]
+) -> list[dict[str, Any]]:
+    differences: list[dict[str, Any]] = []
+    reference_slides = reference["slides"]
+    actual_slides = actual["slides"]
+    for index in range(min(len(reference_slides), len(actual_slides))):
+        reference_slide = reference_slides[index]
+        actual_slide = actual_slides[index]
+        for field in _OFFICE_STRUCTURE_FIELDS:
+            if reference_slide[field] != actual_slide[field]:
+                differences.append(
+                    {
+                        "slide_index": index + 1,
+                        "field": field,
+                        "source": reference_slide[field],
+                        "output": actual_slide[field],
+                    }
+                )
+    return differences
+
+
 def _export_slides(
     path: Path,
     out_dir: Path,
@@ -257,6 +368,7 @@ def _export_slides(
         slide_count = int(presentation.Slides.Count)
         slide_w_pt = float(presentation.PageSetup.SlideWidth)
         slide_h_pt = float(presentation.PageSetup.SlideHeight)
+        structure = _office_presentation_structure(presentation)
         for index in range(1, slide_count + 1):
             if time.monotonic() - started > timeout_s:
                 raise TimeoutError(
@@ -284,6 +396,7 @@ def _export_slides(
             "slide_height_pt": slide_h_pt,
             "export_width_px": px_w,
             "export_height_px": px_h,
+            "structure": structure,
             "slides": slides_meta,
         }
     finally:
@@ -485,6 +598,14 @@ def compare_files(
                     }
                     for i, slide in enumerate(conversion.presentation.slides)
                 ],
+            },
+            "office_structure": {
+                "source": reference_meta["structure"],
+                "output": actual_meta["structure"],
+                "differences": _office_structure_differences(
+                    reference_meta["structure"],
+                    actual_meta["structure"],
+                ),
             },
             "conversion_warnings": conversion.report.to_dict(),
             "slides": slide_metrics,

@@ -79,6 +79,13 @@ class OoxmlTests(unittest.TestCase):
                 xml = archive.read("ppt/slides/slide1.xml").decode()
                 rels = archive.read("ppt/slides/_rels/slide1.xml.rels").decode()
                 names = set(archive.namelist())
+                notes_xml = archive.read("ppt/notesSlides/notesSlide1.xml").decode()
+                notes_master_xml = archive.read(
+                    "ppt/notesMasters/notesMaster1.xml"
+                ).decode()
+                notes_master_rels = archive.read(
+                    "ppt/notesMasters/_rels/notesMaster1.xml.rels"
+                ).decode()
         self.assertIn('b="1"', xml)
         self.assertIn('i="1"', xml)
         self.assertIn('u="sng"', xml)
@@ -88,6 +95,12 @@ class OoxmlTests(unittest.TestCase):
         self.assertIn("ppt/comments/comment1.xml", names)
         self.assertIn("ppt/notesSlides/notesSlide1.xml", names)
         self.assertIn("ppt/notesMasters/notesMaster1.xml", names)
+        self.assertIn("ppt/theme/theme2.xml", names)
+        self.assertIn("<a:chOff", notes_xml)
+        self.assertIn("<a:chExt", notes_xml)
+        self.assertIn("<p:notesStyle>", notes_master_xml)
+        self.assertNotIn("<p:txStyles>", notes_master_xml)
+        self.assertIn('Target="../theme/theme2.xml"', notes_master_rels)
 
     def test_marks_hidden_slides_in_presentation(self):
         presentation = Presentation(5760, 4320, (Slide(()), Slide((), hidden=True)))

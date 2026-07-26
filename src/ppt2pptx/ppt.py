@@ -350,20 +350,29 @@ def persist_directory(data: bytes) -> dict[int, int]:
                 cursor += 4
     return mapping
 
-def _slide_refs(document: Record) -> list[int]:
-    refs: list[int] = []
+def _slide_entries(document: Record) -> list[tuple[int, int]]:
+    entries: list[tuple[int, int]] = []
     for container in descendants(document):
         if container.type != RT_SLIDE_LIST_WITH_TEXT or container.instance != 0:
             continue
         for record in records(container.payload):
             if record.type != RT_SLIDE_PERSIST_ATOM or len(record.payload) < 12:
                 continue
-            # SlidePersistAtom begins with persistIdRef.  The following fields
-            # are slide identifier and flags.
+            # SlidePersistAtom stores persistIdRef first and the stable slideId
+            # after flags and cTexts at byte offset 12.
             reference = struct.unpack_from("<I", record.payload, 0)[0]
             if reference:
-                refs.append(reference)
-    return refs
+                slide_id = (
+                    struct.unpack_from("<I", record.payload, 12)[0]
+                    if len(record.payload) >= 16
+                    else 0
+                )
+                entries.append((reference, slide_id))
+    return entries
+
+
+def _slide_refs(document: Record) -> list[int]:
+    return [reference for reference, _slide_id in _slide_entries(document)]
 
 def _notes_refs(document: Record) -> list[int]:
     refs: list[int] = []
@@ -2158,27 +2167,45 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
     hyperlinks = _hyperlinks(document)
     external_text = _external_slide_text(document, fonts, masters, hyperlinks, scheme)
     header_footer = _header_footer(document, instance=3)
-    note_values: list[tuple[str, ...]] = []
+    notes_by_slide_id: dict[int, tuple[str, ...]] = {}
+    unbound_note_values: list[tuple[str, ...]] = []
     for reference in _notes_refs(document):
         offset = mapping.get(reference)
         if offset is None or offset >= len(powerpoint_document):
-            note_values.append(())
+            unbound_note_values.append(())
             continue
         try:
             note_record = next(records(powerpoint_document, offset))
         except (InvalidPpt, StopIteration):
-            note_values.append(())
+            unbound_note_values.append(())
             continue
         if note_record.type != 1008:
-            note_values.append(())
+            unbound_note_values.append(())
             continue
         values = tuple(box.text for box in _shape_text_boxes(note_record, [], fonts, masters, hyperlinks, scheme)
                        if box.text.strip() not in ("", "*"))
-        note_values.append(values)
+        notes_atom = next(
+            (
+                child
+                for child in descendants(note_record)
+                if child.type == 1009 and len(child.payload) >= 4
+            ),
+            None,
+        )
+        slide_id = (
+            struct.unpack_from("<I", notes_atom.payload)[0]
+            if notes_atom is not None
+            else 0
+        )
+        if slide_id:
+            notes_by_slide_id[slide_id] = values
+        else:
+            unbound_note_values.append(values)
     width, height = _presentation_size(document)
     slides: list[Slide] = []
     seen_offsets: set[int] = set()
-    for slide_index, reference in enumerate(_slide_refs(document)):
+    unbound_note_index = 0
+    for reference, slide_id in _slide_entries(document):
         offset = mapping.get(reference)
         if offset is None or offset >= len(powerpoint_document) or offset in seen_offsets:
             continue
@@ -2189,7 +2216,14 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
         if slide_record.type != RT_SLIDE:
             continue
         seen_offsets.add(offset)
-        notes = note_values[slide_index] if slide_index < len(note_values) else ()
+        notes = notes_by_slide_id.get(slide_id)
+        if notes is None:
+            notes = (
+                unbound_note_values[unbound_note_index]
+                if unbound_note_index < len(unbound_note_values)
+                else ()
+            )
+            unbound_note_index += 1
         slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_records[0] if master_records else None, notes, width, height))
     if not slides:
         for slide_record in descendants(document):

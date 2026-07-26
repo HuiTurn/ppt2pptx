@@ -124,6 +124,23 @@ class PowerPointVisualRegressionTests(unittest.TestCase):
             self.assertIsNotNone(report["summary"]["mean_mae"])
             # Structure counts must be present for editable-object assertions.
             self.assertGreaterEqual(report["structure"]["text_box_count"], 1)
+            office_structure = report["office_structure"]
+            self.assertEqual(office_structure["differences"], [])
+            self.assertEqual(office_structure["source"]["shape_count"], 3)
+            self.assertEqual(office_structure["output"]["shape_count"], 3)
+            self.assertEqual(office_structure["source"]["text_shape_count"], 2)
+            self.assertEqual(office_structure["output"]["text_shape_count"], 2)
+            self.assertEqual(office_structure["source"]["comment_count"], 1)
+            self.assertEqual(office_structure["output"]["comment_count"], 1)
+            self.assertEqual(office_structure["source"]["note_text_count"], 1)
+            self.assertEqual(office_structure["output"]["note_text_count"], 1)
+            for side in ("source", "output"):
+                self.assertIn("picture_count", office_structure[side])
+                self.assertIn("table_count", office_structure[side])
+                self.assertIn("chart_count", office_structure[side])
+                self.assertIn("comment_count", office_structure[side])
+                self.assertIn("note_text_count", office_structure[side])
+                self.assertEqual(len(office_structure[side]["slides"]), 2)
             warnings = report["conversion_warnings"]["warnings"]
             codes = [item["code"] for item in warnings]
             self.assertNotIn("ADVANCED_FEATURES_APPROXIMATED", codes)
