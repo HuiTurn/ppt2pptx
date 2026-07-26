@@ -221,6 +221,10 @@ class Picture:
     line_color: str | None = None
     line_dash: str | None = None
     line_width: int | None = None
+    embedded_object_data: bytes | None = None
+    embedded_object_prog_id: str | None = None
+    embedded_object_name: str | None = None
+    external_object_id: int | None = None
 
 @dataclass(frozen=True, slots=True)
 class BasicShape:
@@ -327,6 +331,7 @@ class Presentation:
     slides: tuple[Slide, ...]
     core_properties: CoreProperties = CoreProperties()
     excluded_offsets: frozenset[int] = frozenset()
+    preserved_external_object_ids: frozenset[int] = frozenset()
 
 @dataclass(frozen=True, slots=True)
 class LossyFeatureLocation:
@@ -2345,6 +2350,7 @@ def _shape_pictures(
     slide: Record,
     image_map: dict[int, tuple[bytes, str, str]],
     scheme: tuple[str, ...] = (),
+    embedded_chart_objects: dict[int, bytes] | None = None,
 ) -> list[Picture]:
     result: list[Picture] = []
     for shape, space in _iter_sp_containers(slide):
@@ -2365,6 +2371,26 @@ def _shape_pictures(
             return round(signed / 65536 * 100000)
         transform = _combine_transform(_transform(children, properties), space)
         transparent_color = _office_color(properties.get(263), scheme)
+        external_object = next(
+            (
+                record
+                for record in descendants(shape)
+                if record.type == RT_EXTERNAL_OBJECT_REF_ATOM
+                and len(record.payload) >= 4
+            ),
+            None,
+        )
+        external_object_id = (
+            struct.unpack_from("<I", external_object.payload)[0]
+            if external_object is not None
+            else None
+        )
+        embedded_data = (
+            embedded_chart_objects.get(external_object_id)
+            if embedded_chart_objects is not None
+            and external_object_id is not None
+            else None
+        )
         result.append(Picture(
             data=data,
             extension=extension,
@@ -2387,7 +2413,68 @@ def _shape_pictures(
             ),
             line_dash=_line_dash(properties) if _has_line(properties) else None,
             line_width=_line_width(properties, space),
+            embedded_object_data=embedded_data,
+            embedded_object_prog_id=(
+                "MSGraph.Chart.8" if embedded_data is not None else None
+            ),
+            embedded_object_name="Chart" if embedded_data is not None else None,
+            external_object_id=external_object_id,
         ))
+    return result
+
+
+def _embedded_chart_objects(
+    data: bytes, mapping: dict[int, int]
+) -> dict[int, bytes]:
+    """Return bounded, validated MS Graph OLE storages keyed by ExObjId."""
+    latest: dict[int, tuple[int, int]] = {}
+    for record in _iter_all_records(data):
+        if (
+            record.type != RT_EXTERNAL_OLE_OBJECT_ATOM
+            or len(record.payload) < 20
+        ):
+            continue
+        _draw_aspect, ole_type, ex_obj_id, subtype, persist_id = (
+            struct.unpack_from("<5I", record.payload)
+        )
+        if ole_type != 0 or subtype != 4:
+            continue
+        latest[ex_obj_id] = (record.offset, persist_id)
+
+    result: dict[int, bytes] = {}
+    for ex_obj_id, (_offset, persist_id) in latest.items():
+        storage_offset = mapping.get(persist_id)
+        if storage_offset is None:
+            continue
+        try:
+            storage = next(records(data, storage_offset))
+        except (InvalidPpt, StopIteration):
+            continue
+        if (
+            storage.type != RT_EXTERNAL_OLE_OBJECT_STG
+            or storage.instance != 1
+            or len(storage.payload) < 5
+        ):
+            continue
+        expected_size = struct.unpack_from("<I", storage.payload)[0]
+        if expected_size < 512 or expected_size > 100_000_000:
+            continue
+        try:
+            inflater = zlib.decompressobj()
+            raw = inflater.decompress(
+                storage.payload[4:],
+                expected_size + 1,
+            )
+        except zlib.error:
+            continue
+        if (
+            inflater.unused_data
+            or len(raw) != expected_size
+            or not raw.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+            or b"MSGraph.Chart.8" not in raw
+        ):
+            continue
+        result[ex_obj_id] = raw
     return result
 
 def _presentation_size(document: Record) -> tuple[int, int]:
@@ -2509,7 +2596,7 @@ def _inherits_master_objects(slide_record: Record) -> bool:
     slide_flags = struct.unpack_from("<H", atom.payload, 20)[0]
     return bool(slide_flags & 0x0001)
 
-def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int, line_patterns: dict[int, str] | None = None, omit_title_place: bool = False) -> Slide:
+def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int, line_patterns: dict[int, str] | None = None, omit_title_place: bool = False, embedded_chart_objects: dict[int, bytes] | None = None) -> Slide:
     tables, table_excluded = _detect_tables(
         slide_record, external_text, fonts, masters, hyperlinks, scheme
     )
@@ -2630,7 +2717,12 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                                      shape.line_back_color))
     boxes = master_boxes + slide_boxes
     pictures = master_pictures + list(
-        _shape_pictures(slide_record, image_map, scheme)
+        _shape_pictures(
+            slide_record,
+            image_map,
+            scheme,
+            embedded_chart_objects,
+        )
     )
     slide_show_info = next((child for child in descendants(slide_record)
                             if child.type == RT_SLIDE_SHOW_SLIDE_INFO_ATOM
@@ -2686,6 +2778,10 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
     if document is None:
         raise InvalidPpt("PowerPoint Document record is missing")
     mapping = persist_directory(powerpoint_document)
+    embedded_chart_objects = _embedded_chart_objects(
+        powerpoint_document,
+        mapping,
+    )
     image_map = _pictures(document, pictures_stream)
     line_patterns = _line_patterns(document, pictures_stream)
     fonts = _fonts(document)
@@ -2773,7 +2869,7 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
             _slide_master_id(slide_record),
             fallback_master,
         )
-        slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_record, notes, width, height, line_patterns, omit_title_place))
+        slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_record, notes, width, height, line_patterns, omit_title_place, embedded_chart_objects))
     if not slides:
         for slide_record in descendants(document):
             if slide_record.type == RT_SLIDE:
@@ -2781,11 +2877,24 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
                     _slide_master_id(slide_record),
                     fallback_master,
                 )
-                slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_record, (), width, height, line_patterns, omit_title_place))
+                slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_record, (), width, height, line_patterns, omit_title_place, embedded_chart_objects))
     excluded_offsets: set[int] = set()
     for slide in slides:
         excluded_offsets |= slide.excluded_offsets
-    return Presentation(width, height, tuple(slides), excluded_offsets=frozenset(excluded_offsets))
+    preserved_external_object_ids = frozenset(
+        picture.external_object_id
+        for slide in slides
+        for picture in slide.pictures
+        if picture.embedded_object_data is not None
+        and picture.external_object_id is not None
+    )
+    return Presentation(
+        width,
+        height,
+        tuple(slides),
+        excluded_offsets=frozenset(excluded_offsets),
+        preserved_external_object_ids=preserved_external_object_ids,
+    )
 
 def extract_slides(powerpoint_document: bytes) -> list[list[str]]:
     return [[box.text for box in slide.text_boxes] for slide in extract_presentation(powerpoint_document).slides]
@@ -3448,7 +3557,9 @@ def _animation_object_diagnostics(
 
 
 def _ole_object_diagnostics(
-    data: bytes, ranges: tuple[tuple[int, int, int], ...]
+    data: bytes,
+    ranges: tuple[tuple[int, int, int], ...],
+    preserved_external_object_ids: frozenset[int] = frozenset(),
 ) -> tuple[
     tuple[
         tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]],
@@ -3518,6 +3629,8 @@ def _ole_object_diagnostics(
         handled_chart_markers.update(item.offset for item in chart_markers)
 
     for atom, ole_type, ex_obj_id in atoms:
+        if ex_obj_id in preserved_external_object_ids:
+            continue
         code, message, object_kind = _OLE_TYPE_DIAGNOSTICS.get(
             ole_type,
             ("OLE_OBJECT_OMITTED", "OLE object of unknown type was omitted", "ole"),
@@ -3747,7 +3860,11 @@ def _smartart_object_diagnostics(
     )
 
 
-def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] | None = None) -> tuple[LossyFeature, ...]:
+def detect_lossy_features(
+    powerpoint_document: bytes,
+    exclude_offsets: set[int] | None = None,
+    preserved_external_object_ids: frozenset[int] = frozenset(),
+) -> tuple[LossyFeature, ...]:
     """Return object-backed loss diagnostics for unsupported/approximated content."""
     ranges = _slide_byte_ranges(powerpoint_document)
     buckets: dict[str, dict[str, object]] = {}
@@ -3758,7 +3875,9 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
         powerpoint_document, ranges
     )
     ole_diagnostics, handled_chart_markers = _ole_object_diagnostics(
-        powerpoint_document, ranges
+        powerpoint_document,
+        ranges,
+        preserved_external_object_ids,
     )
     (
         smartart_diagnostics,

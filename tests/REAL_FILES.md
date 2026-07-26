@@ -57,13 +57,18 @@ The controlled `tests/fixtures/visual_ole.ppt` fixture additionally verifies
 that an OLE-to-preview-picture structural difference has one slide-bound
 `EMBEDDED_OLE_OMITTED` diagnostic rather than one warning count per storage
 record.
-The controlled `tests/fixtures/visual_chart.ppt` fixture verifies the same
-object linkage for a legacy `MSGraph.Chart.8` chart and rejects duplicate
-`EMBEDDED_OLE_OMITTED` reporting when `CHART_OMITTED` is the precise category.
+The controlled `tests/fixtures/visual_chart.ppt` fixture verifies that a
+legacy `MSGraph.Chart.8` compressed `ExOleObjStg` is validated, embedded as an
+editable OOXML OLE object, and paired with its cached vector preview. Source
+and output both expose one OLE object in PowerPoint, render pixel-identically,
+and emit no loss warning.
 Apache POI `test-data/slideshow/37625.ppt` additionally exercises incremental
 save history: 189 stored `ExternalOleObjectAtom` records collapse to the 10
 objects referenced by current slide persist ranges (8 charts and 2 other OLE
-objects), matching PowerPoint's source structure census.
+objects), matching PowerPoint's source structure census. All 8 chart storages
+round-trip byte-for-byte as editable OLE objects; only the 2 unsupported
+non-chart OLE objects retain `EMBEDDED_OLE_OMITTED` diagnostics, with identical
+29-slide bilateral visual metrics and no hard differences.
 The same file contains 14 saved `DocumentContainer` revisions; the latest one
 must produce all 29 current slides rather than the 28 listed by the first
 historical revision.
@@ -76,8 +81,8 @@ double-counting either representation. Its `ParaBuildContainer` must also be
 included in the same warning rather than counted as another animation object.
 The controlled `tests/fixtures/visual_chart_animation.ppt` fixture verifies
 that a by-series MS Graph build contributes its `ChartBuildContainer` records
-to the three real animation effects while the chart itself still produces one
-independent, slide-bound `CHART_OMITTED` editability diagnostic.
+to the three real animation effects while the chart storage remains editable;
+only the three omitted animation effects are diagnosed.
 The controlled `tests/fixtures/visual_smartart.ppt` fixture verifies that a
 PowerPoint-saved SmartArt `metroBlob` produces exactly one slide-bound
 `DIAGRAM_OR_SMARTART_OMITTED` warning. The Office census must show one source

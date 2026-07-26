@@ -440,7 +440,7 @@ def _table_frames(tables: tuple[Table, ...], start_id: int) -> tuple[list[str], 
         next_id += 1
     return frames, next_id
 
-def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, background_gradient_angle: int | None, background_gradient_type: int | None, background_image_rid: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, tables: tuple[Table, ...], hidden: bool) -> str:
+def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str, str | None]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, background_gradient_angle: int | None, background_gradient_type: int | None, background_image_rid: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, tables: tuple[Table, ...], hidden: bool) -> str:
     master_drawing_shapes = []
     background_drawing_shapes = []
     foreground_drawing_shapes = []
@@ -498,7 +498,7 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
                                           len(basic_shapes) + len(parts) + 2)
     base_picture_shapes = []
     overlay_picture_shapes = []
-    for index, (picture, relation_id) in enumerate(pictures, len(basic_shapes) + len(parts) + len(footer_shapes) + 2):
+    for index, (picture, relation_id, object_relation_id) in enumerate(pictures, len(basic_shapes) + len(parts) + len(footer_shapes) + 2):
         crop = f'<a:srcRect l="{picture.crop_left}" t="{picture.crop_top}" r="{picture.crop_right}" b="{picture.crop_bottom}"/>' if any((picture.crop_left, picture.crop_top, picture.crop_right, picture.crop_bottom)) else ''
         stretch = (
             '<a:stretch/>'
@@ -519,6 +519,29 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
             picture.line_color, picture.line_dash, picture.line_width
         )
         picture_xml = f'<p:pic><p:nvPicPr><p:cNvPr id="{index}" name="Picture {index}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="{relation_id}">{transparent}</a:blip>{crop}{stretch}</p:blipFill><p:spPr><a:xfrm{_xfrm_attributes(picture.rotation, picture.flip_horizontal, picture.flip_vertical)}><a:off x="{_emu(left)}" y="{_emu(top)}"/><a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>{line}</p:spPr></p:pic>'
+        if object_relation_id is not None:
+            object_name = picture.embedded_object_name or "Object"
+            prog_id = picture.embedded_object_prog_id or "Package"
+            fallback = picture_xml.replace(
+                f'id="{index}" name="Picture {index}"',
+                f'id="0" name="{_xml(object_name)}"',
+                1,
+            )
+            picture_xml = (
+                '<p:graphicFrame><p:nvGraphicFramePr>'
+                f'<p:cNvPr id="{index}" name="{_xml(object_name)} {index}"/>'
+                '<p:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/>'
+                '</p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>'
+                f'<p:xfrm><a:off x="{_emu(left)}" y="{_emu(top)}"/>'
+                f'<a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></p:xfrm>'
+                '<a:graphic><a:graphicData '
+                'uri="http://schemas.openxmlformats.org/presentationml/2006/ole">'
+                f'<p:oleObj name="{_xml(object_name)}" r:id="{object_relation_id}" '
+                f'imgW="{_emu(width)}" imgH="{_emu(height)}" '
+                f'progId="{_xml(prog_id)}"><p:embed followColorScheme="full"/>'
+                f'{fallback}</p:oleObj></a:graphicData></a:graphic>'
+                '</p:graphicFrame>'
+            )
         # Large pictures are normally screenshots, plots, or photo backdrops
         # that annotations must overlay.  Small pictures are commonly WMF
         # equations or clip art and need to remain above filled diagram boxes.
@@ -583,6 +606,11 @@ def _validate_package(path: Path) -> None:
 def write_pptx(destination: str | Path, presentation: Presentation) -> None:
     slides = presentation.slides
     has_notes = any(slide.notes for slide in slides)
+    has_embedded_objects = any(
+        picture.embedded_object_data is not None
+        for slide in slides
+        for picture in slide.pictures
+    )
     author_ids: dict[tuple[str, str], int] = {}
     for slide in slides:
         for comment in slide.comments:
@@ -607,7 +635,8 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
                 )
             if author_ids:
                 comment_overrides += '<Override PartName="/ppt/commentAuthors.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.commentAuthors+xml"/>'
-            archive.writestr('[Content_Types].xml', f'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="{CT}"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="gif" ContentType="image/gif"/><Default Extension="tif" ContentType="image/tiff"/><Default Extension="emf" ContentType="image/x-emf"/><Default Extension="wmf" ContentType="image/x-wmf"/><Default Extension="pct" ContentType="image/x-pict"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>{overrides}{comment_overrides}{note_overrides}</Types>')
+            embedded_default = '<Default Extension="bin" ContentType="application/vnd.openxmlformats-officedocument.oleObject"/>' if has_embedded_objects else ''
+            archive.writestr('[Content_Types].xml', f'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="{CT}"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="gif" ContentType="image/gif"/><Default Extension="tif" ContentType="image/tiff"/><Default Extension="emf" ContentType="image/x-emf"/><Default Extension="wmf" ContentType="image/x-wmf"/><Default Extension="pct" ContentType="image/x-pict"/>{embedded_default}<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>{overrides}{comment_overrides}{note_overrides}</Types>')
             archive.writestr('_rels/.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>')
             core = presentation.core_properties
             created = core.created or now
@@ -625,10 +654,11 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
             archive.writestr('docProps/app.xml', f'<?xml version="1.0" encoding="UTF-8"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Application>ppt2pptx</Application><Slides>{len(slides)}</Slides></Properties>')
             rels, ids = [], []
             image_index = 1
+            embedded_object_index = 1
             for i in range(1, len(slides)+1):
                 rels.append(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{i}.xml"/>')
                 ids.append(f'<p:sldId id="{255+i}" r:id="rId{i}"/>')
-                picture_refs: list[tuple[Picture, str]] = []
+                picture_refs: list[tuple[Picture, str, str | None]] = []
                 picture_rels: list[str] = []
                 next_relation = 2
                 background_image_rid = None
@@ -644,10 +674,30 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
                     relation_id = f"rId{next_relation}"
                     next_relation += 1
                     filename = f"image{image_index}.{picture.extension}"
-                    picture_refs.append((picture, relation_id))
                     picture_rels.append(f'<Relationship Id="{relation_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/{filename}"/>')
                     archive.writestr(f'ppt/media/{filename}', picture.data)
                     image_index += 1
+                    object_relation_id = None
+                    if picture.embedded_object_data is not None:
+                        object_relation_id = f"rId{next_relation}"
+                        next_relation += 1
+                        object_filename = (
+                            f"oleObject{embedded_object_index}.bin"
+                        )
+                        picture_rels.append(
+                            f'<Relationship Id="{object_relation_id}" '
+                            'Type="http://schemas.openxmlformats.org/officeDocument/'
+                            '2006/relationships/oleObject" '
+                            f'Target="../embeddings/{object_filename}"/>'
+                        )
+                        archive.writestr(
+                            f"ppt/embeddings/{object_filename}",
+                            picture.embedded_object_data,
+                        )
+                        embedded_object_index += 1
+                    picture_refs.append(
+                        (picture, relation_id, object_relation_id)
+                    )
                 if slides[i-1].comments:
                     comment_rid = f"rId{next_relation}"
                     next_relation += 1

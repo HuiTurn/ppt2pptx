@@ -130,6 +130,12 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                      "line_color": picture.line_color,
                      "line_dash": picture.line_dash,
                      "line_width": picture.line_width,
+                     "embedded_object": ({
+                         "prog_id": picture.embedded_object_prog_id,
+                         "name": picture.embedded_object_name,
+                         "byte_count": len(picture.embedded_object_data),
+                         "external_object_id": picture.external_object_id,
+                     } if picture.embedded_object_data is not None else None),
                      "rotation": picture.rotation, "flip_horizontal": picture.flip_horizontal,
                      "flip_vertical": picture.flip_vertical}
                     for picture in slide.pictures
@@ -196,7 +202,11 @@ def convert(source: str | Path, destination: str | Path | None = None, *, limits
     if source_path.resolve() == output.resolve(): raise UnsafeOutputPathError("destination must not overwrite the source presentation")
     report = ConversionReport(str(source_path), str(output))
     presentation, document_stream = _load(source_path, limits, report, password)
-    for feature in detect_lossy_features(document_stream, presentation.excluded_offsets):
+    for feature in detect_lossy_features(
+        document_stream,
+        presentation.excluded_offsets,
+        presentation.preserved_external_object_ids,
+    ):
         report.warning(
             feature.code,
             feature.message,
