@@ -67,3 +67,7 @@ must remain identical while the report contains exactly one slide-bound
 matching `___PPT10` `ExtTimeNodeContainer` effect instead of missing or
 double-counting either representation. Its `ParaBuildContainer` must also be
 included in the same warning rather than counted as another animation object.
+The controlled `tests/fixtures/visual_chart_animation.ppt` fixture verifies
+that a by-series MS Graph build contributes its `ChartBuildContainer` records
+to the three real animation effects while the chart itself still produces one
+independent, slide-bound `CHART_OMITTED` editability diagnostic.

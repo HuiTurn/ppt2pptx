@@ -2248,8 +2248,6 @@ def extract_slides(powerpoint_document: bytes) -> list[list[str]]:
 _LOSSY_RECORD_CODES: dict[int, tuple[str, str]] = {
     RT_ROUNDTRIP_ANIMATION_ATOM: ("ANIMATION_OMITTED", "animation timeline was omitted"),
     RT_ROUNDTRIP_ANIMATION_HASH_ATOM: ("ANIMATION_OMITTED", "animation timeline was omitted"),
-    RT_CHART_BUILD: ("ANIMATION_OMITTED", "chart build animation was omitted"),
-    RT_CHART_BUILD_ATOM: ("ANIMATION_OMITTED", "chart build animation was omitted"),
     RT_SOUND_COLLECTION: ("AUDIO_OMITTED", "embedded audio was omitted"),
     RT_SOUND: ("AUDIO_OMITTED", "embedded audio was omitted"),
     RT_SOUND_DATA_BLOB: ("AUDIO_OMITTED", "embedded audio was omitted"),
@@ -2457,6 +2455,10 @@ def _animation_object_diagnostics(
         tuple[Record, int | None, int, int, tuple[int, ...]]
     ] = []
     handled_paragraph_builds: set[int] = set()
+    chart_builds: list[
+        tuple[Record, int | None, int, int, tuple[int, ...]]
+    ] = []
+    handled_chart_builds: set[int] = set()
     seen_timing_nodes: set[int] = set()
     for blob in (
         record for record in all_records if record.type == RT_BINARY_TAG_DATA_BLOB
@@ -2513,6 +2515,49 @@ def _animation_object_diagnostics(
                                         if paragraph_atom is not None
                                         else ()
                                     ),
+                                }
+                            )
+                        ),
+                    )
+                )
+            for chart_build in (
+                record
+                for record in direct_children(build_list)
+                if record.type == RT_CHART_BUILD
+            ):
+                build_children = direct_children(chart_build)
+                build_atom = next(
+                    (
+                        child
+                        for child in build_children
+                        if child.type == RT_BUILD_ATOM
+                        and len(child.payload) >= 12
+                    ),
+                    None,
+                )
+                if build_atom is None:
+                    continue
+                chart_atom = next(
+                    (
+                        child
+                        for child in build_children
+                        if child.type == RT_CHART_BUILD_ATOM
+                    ),
+                    None,
+                )
+                chart_builds.append(
+                    (
+                        chart_build,
+                        _slide_index_for_offset(chart_build.offset, ranges),
+                        struct.unpack_from("<I", build_atom.payload, 8)[0],
+                        struct.unpack_from("<I", build_atom.payload, 4)[0],
+                        tuple(
+                            sorted(
+                                {
+                                    build_list.type,
+                                    chart_build.type,
+                                    build_atom.type,
+                                    *((chart_atom.type,) if chart_atom else ()),
                                 }
                             )
                         ),
@@ -2621,6 +2666,31 @@ def _animation_object_diagnostics(
                         "shape animation timeline, effect, and paragraph build "
                         "were omitted"
                     )
+                chart_match = next(
+                    (
+                        index
+                        for index, (
+                            _chart,
+                            build_slide,
+                            build_shape,
+                            build_id,
+                            _types,
+                        ) in enumerate(chart_builds)
+                        if index not in handled_chart_builds
+                        and build_slide == slide_index
+                        and shape_id is not None
+                        and build_shape == shape_id
+                        and (not group_ids or build_id in group_ids)
+                    ),
+                    None,
+                )
+                if chart_match is not None:
+                    handled_chart_builds.add(chart_match)
+                    record_types.update(chart_builds[chart_match][4])
+                    message = (
+                        "chart animation timeline, effect, and chart build "
+                        "were omitted"
+                    )
                 if time_node is not None:
                     record_types.add(time_node.type)
                 if matched is not None:
@@ -2644,6 +2714,28 @@ def _animation_object_diagnostics(
                         ),
                     )
                 )
+
+    for index, (chart, slide_index, _shape_id, _build_id, types) in enumerate(
+        chart_builds
+    ):
+        if index in handled_chart_builds:
+            continue
+        diagnostics.append(
+            (
+                "ANIMATION_OMITTED",
+                "chart build animation was omitted",
+                types,
+                chart.offset,
+                (
+                    LossyFeatureLocation(
+                        slide_index=slide_index,
+                        record_type=chart.type,
+                        record_offset=chart.offset,
+                        object_kind="animation",
+                    ),
+                ),
+            )
+        )
 
     for index, (paragraph, slide_index, shape_id, _build_id, types) in enumerate(
         paragraph_builds

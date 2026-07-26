@@ -79,6 +79,8 @@ legacy fallback by OfficeArt shape ID, avoiding both silent timeline loss and
 duplicate warnings for one effect. Text `ParaBuildContainer` settings are also
 bound to their timing effect by shape/build ID, so paragraph sequencing,
 direction, and automatic-delay loss is represented by that same object warning.
+Legacy chart build settings are linked the same way, while chart editability
+loss remains a separate `CHART_OMITTED` diagnostic.
 
 ## Development
 
