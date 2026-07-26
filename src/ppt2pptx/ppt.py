@@ -246,6 +246,7 @@ class BasicShape:
     adjustments: tuple[int, ...] = ()
     line_pattern: str | None = None
     line_back_color: str | None = None
+    from_master: bool = False
 
 @dataclass(frozen=True, slots=True)
 class Comment:
@@ -2599,7 +2600,7 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                                          shape.fill_pattern, shape.fill_back_color,
                                          shape.line_head, shape.line_tail,
                                          shape.adjustments, shape.line_pattern,
-                                         shape.line_back_color))
+                                         shape.line_back_color, from_master=True))
     for shape in _basic_shapes(
         slide_record,
         image_map,

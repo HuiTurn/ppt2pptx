@@ -441,6 +441,7 @@ def _table_frames(tables: tuple[Table, ...], start_id: int) -> tuple[list[str], 
     return frames, next_id
 
 def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, background_gradient_angle: int | None, background_gradient_type: int | None, background_image_rid: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, tables: tuple[Table, ...], hidden: bool) -> str:
+    master_drawing_shapes = []
     background_drawing_shapes = []
     foreground_drawing_shapes = []
     for index, shape in enumerate(basic_shapes, 2):
@@ -455,12 +456,15 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
             shape.left, shape.top, shape.width, shape.height, shape.rotation
         )
         shape_xml = f'<p:sp><p:nvSpPr><p:cNvPr id="{index}" name="{shape.preset} {index}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm{_xfrm_attributes(shape.rotation, shape.flip_horizontal, shape.flip_vertical)}><a:off x="{_emu(left)}" y="{_emu(top)}"/><a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm>{geom}{fill}{line}</p:spPr></p:sp>'
-        target = (
-            background_drawing_shapes
-            if shape.fill_color and shape.width * shape.height >= 1_000_000
-            else foreground_drawing_shapes
-        )
-        target.append(shape_xml)
+        if shape.from_master:
+            master_drawing_shapes.append(shape_xml)
+        else:
+            target = (
+                background_drawing_shapes
+                if shape.fill_color and shape.width * shape.height >= 1_000_000
+                else foreground_drawing_shapes
+            )
+            target.append(shape_xml)
     text_shapes = []
     for index, box in enumerate(parts, len(basic_shapes) + 2):
         paragraphs = _paragraphs(box, hyperlink_ids)
@@ -551,7 +555,7 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
     show = ' show="0"' if hidden else ''
     table_next_id = len(basic_shapes) + len(parts) + len(footer_shapes) + len(pictures) + 2
     table_frames, _ = _table_frames(tables, table_next_id)
-    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"' + show + '><p:cSld>' + background + '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' + ''.join(background_drawing_shapes) + ''.join(base_picture_shapes) + ''.join(foreground_drawing_shapes) + ''.join(overlay_picture_shapes) + ''.join(table_frames) + ''.join(text_shapes) + ''.join(footer_shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"' + show + '><p:cSld>' + background + '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' + ''.join(master_drawing_shapes) + ''.join(background_drawing_shapes) + ''.join(base_picture_shapes) + ''.join(foreground_drawing_shapes) + ''.join(overlay_picture_shapes) + ''.join(table_frames) + ''.join(text_shapes) + ''.join(footer_shapes) + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
 
 def _notes_slide(values: tuple[str, ...]) -> str:
     text = "\r".join(values)

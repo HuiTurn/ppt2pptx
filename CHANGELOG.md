@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve the master/slide shape stacking boundary when flattening legacy
+  master decorations, keeping master lines and fills behind editable
+  slide-level shapes instead of reordering them by geometry.
 - Preserve legacy `TextPFException` bullet font, color, and relative-size
   properties, so Wingdings/Webdings bullet characters remain editable symbols
   instead of rendering as ordinary letters.
