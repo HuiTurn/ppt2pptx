@@ -94,6 +94,15 @@ one embedded PNG used through the slide background's OfficeArt
 It verifies that the converter writes a DrawingML background relationship,
 does not turn the background into a picture shape, emits no lossy warning, and
 matches PowerPoint's source rendering pixel-for-pixel.
+The controlled `tests/fixtures/visual_bullet_font.ppt` fixture contains one
+editable three-paragraph text box whose legacy `TextPFException` records use
+Wingdings `w`/`n` bullets with distinct colors and relative sizes. The
+bilateral test asserts that the parser retains those properties, the PPTX
+emits DrawingML `buFont`/`buClr`/`buSzPct`, and PowerPoint renders the source
+and output pixel-identically without a conversion warning. In the 29-slide
+`37625.ppt` corpus, the same mapping improves 15 slides with no slide
+regression because the deck uses symbol-font bullets throughout its editable
+lists.
 The controlled `tests/fixtures/visual_zero_extent_lines.ppt` fixture recreates
 54 individual master lines from the grouped grid in pinned Apache POI
 `37625.ppt` test data while removing all unrelated slide/master objects and

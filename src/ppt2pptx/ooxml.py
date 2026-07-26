@@ -78,7 +78,42 @@ def _paragraphs(box: TextBox, hyperlink_ids: dict[str, str]) -> str:
                 generic_indent = _emu(216 if level == 0 else 180)
                 attributes += f' marL="{margin}" indent="-{generic_indent}"'
             bullet_char = box.paragraph_bullet_chars[index] if index < len(box.paragraph_bullet_chars) else None
-            bullet_xml = f'<a:buChar char="{_xml(bullet_char or "•")}"/>'
+            bullet_typeface = (
+                box.paragraph_bullet_typefaces[index]
+                if index < len(box.paragraph_bullet_typefaces)
+                else None
+            )
+            bullet_color = (
+                box.paragraph_bullet_colors[index]
+                if index < len(box.paragraph_bullet_colors)
+                else None
+            )
+            bullet_size = (
+                box.paragraph_bullet_sizes[index]
+                if index < len(box.paragraph_bullet_sizes)
+                else None
+            )
+            bullet_color_xml = (
+                f'<a:buClr><a:srgbClr val="{bullet_color}"/></a:buClr>'
+                if bullet_color else ""
+            )
+            bullet_size_xml = (
+                f'<a:buSzPct val="{bullet_size * 1000}"/>'
+                if bullet_size is not None and bullet_size > 0
+                else (
+                    f'<a:buSzPts val="{-bullet_size * 100}"/>'
+                    if bullet_size is not None and bullet_size < 0
+                    else ""
+                )
+            )
+            bullet_font_xml = (
+                f'<a:buFont typeface="{_xml(bullet_typeface)}"/>'
+                if bullet_typeface else ""
+            )
+            bullet_xml = (
+                f'{bullet_color_xml}{bullet_size_xml}{bullet_font_xml}'
+                f'<a:buChar char="{_xml(bullet_char or "•")}"/>'
+            )
         else:
             bullet_xml = '<a:buNone/>'
         tabs_xml = ""

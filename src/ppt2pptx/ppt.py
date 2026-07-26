@@ -112,6 +112,9 @@ class TextBox:
     line_dash: str | None = None
     paragraph_levels: tuple[int, ...] = ()
     paragraph_bullet_chars: tuple[str | None, ...] = ()
+    paragraph_bullet_typefaces: tuple[str | None, ...] = ()
+    paragraph_bullet_colors: tuple[str | None, ...] = ()
+    paragraph_bullet_sizes: tuple[int | None, ...] = ()
     auto_fit: bool = False
     fit_shape_to_text: bool = False
     vertical_anchor: str | None = None
@@ -155,6 +158,11 @@ class TextContent:
     paragraph_bullets: tuple[bool, ...] = ()
     paragraph_levels: tuple[int, ...] = ()
     paragraph_bullet_chars: tuple[str | None, ...] = ()
+    paragraph_bullet_typefaces: tuple[str | None, ...] = ()
+    paragraph_bullet_colors: tuple[str | None, ...] = ()
+    paragraph_bullet_sizes: tuple[int | None, ...] = ()
+    paragraph_bullet_color_explicit: tuple[bool, ...] = ()
+    paragraph_bullet_size_explicit: tuple[bool, ...] = ()
     paragraph_left_margins: tuple[int | None, ...] = ()
     paragraph_indents: tuple[int | None, ...] = ()
     paragraph_line_spacings: tuple[int | None, ...] = ()
@@ -170,6 +178,9 @@ class _MasterStyle:
     alignment: str | None
     bullet: bool | None
     bullet_char: str | None = None
+    bullet_typeface: str | None = None
+    bullet_color: str | None = None
+    bullet_size: int | None = None
     left_margin: int | None = None
     indent: int | None = None
     line_spacing: int | None = None
@@ -181,6 +192,9 @@ class _ParagraphProperties:
     alignment: str | None = None
     bullet: bool | None = None
     bullet_char: str | None = None
+    bullet_typeface: str | None = None
+    bullet_color: str | None = None
+    bullet_size: int | None = None
     left_margin: int | None = None
     indent: int | None = None
     line_spacing: int | None = None
@@ -458,11 +472,18 @@ def _text(record: Record) -> str | None:
     return None
 
 def _read_paragraph_properties(
-    payload: bytes, position: int, mask: int
+    payload: bytes,
+    position: int,
+    mask: int,
+    fonts: tuple[str, ...] = (),
+    scheme: tuple[str, ...] = (),
 ) -> tuple[int, _ParagraphProperties]:
     alignment: str | None = None
     bullet: bool | None = None
     bullet_char: str | None = None
+    bullet_typeface: str | None = None
+    bullet_color: str | None = None
+    bullet_size: int | None = None
     left_margin = indent = line_spacing = space_before = space_after = None
     fixed = ((0xF, 2), (0x80, 2), (0x10, 2), (0x40, 2), (0x20, 4),
              (0x800, 2), (0x1000, 2), (0x2000, 2), (0x4000, 2),
@@ -471,13 +492,30 @@ def _read_paragraph_properties(
         if mask & property_mask:
             if position + size > len(payload):
                 return len(payload), _ParagraphProperties(
-                    alignment, bullet, bullet_char, left_margin, indent,
-                    line_spacing, space_before, space_after
+                    alignment=alignment,
+                    bullet=bullet,
+                    bullet_char=bullet_char,
+                    bullet_typeface=bullet_typeface,
+                    bullet_color=bullet_color,
+                    bullet_size=bullet_size,
+                    left_margin=left_margin,
+                    indent=indent,
+                    line_spacing=line_spacing,
+                    space_before=space_before,
+                    space_after=space_after,
                 )
             raw = payload[position:position + size]
             value = int.from_bytes(raw, "little", signed=size == 2)
             if property_mask == 0xF:
                 bullet = bool(value & 1)
+            elif property_mask == 0x10:
+                bullet_typeface = (
+                    fonts[value] if 0 <= value < len(fonts) else None
+                )
+            elif property_mask == 0x40:
+                bullet_size = value
+            elif property_mask == 0x20:
+                bullet_color = _text_color(value, scheme)
             elif property_mask == 0x80:
                 codepoint = int.from_bytes(raw, "little")
                 bullet_char = chr(codepoint) if codepoint else None
@@ -497,8 +535,17 @@ def _read_paragraph_properties(
     if mask & 0x100000:
         if position + 2 > len(payload):
             return len(payload), _ParagraphProperties(
-                alignment, bullet, bullet_char, left_margin, indent,
-                line_spacing, space_before, space_after
+                alignment=alignment,
+                bullet=bullet,
+                bullet_char=bullet_char,
+                bullet_typeface=bullet_typeface,
+                bullet_color=bullet_color,
+                bullet_size=bullet_size,
+                left_margin=left_margin,
+                indent=indent,
+                line_spacing=line_spacing,
+                space_before=space_before,
+                space_after=space_after,
             )
         count = struct.unpack_from("<H", payload, position)[0]
         position += min(2 + count * 4, len(payload) - position)
@@ -506,8 +553,17 @@ def _read_paragraph_properties(
         if mask & property_mask:
             position = min(position + 2, len(payload))
     return position, _ParagraphProperties(
-        alignment, bullet, bullet_char, left_margin, indent,
-        line_spacing, space_before, space_after
+        alignment=alignment,
+        bullet=bullet,
+        bullet_char=bullet_char,
+        bullet_typeface=bullet_typeface,
+        bullet_color=bullet_color,
+        bullet_size=bullet_size,
+        left_margin=left_margin,
+        indent=indent,
+        line_spacing=line_spacing,
+        space_before=space_before,
+        space_after=space_after,
     )
 
 def _skip_paragraph_properties(
@@ -656,6 +712,9 @@ def _master_at_level(masters: tuple[_MasterStyle, ...], level: int) -> _MasterSt
             current.alignment if current.alignment is not None else effective.alignment,
             current.bullet if current.bullet is not None else effective.bullet,
             current.bullet_char or effective.bullet_char,
+            current.bullet_typeface or effective.bullet_typeface,
+            current.bullet_color or effective.bullet_color,
+            current.bullet_size if current.bullet_size is not None else effective.bullet_size,
             current.left_margin if current.left_margin is not None else effective.left_margin,
             current.indent if current.indent is not None else effective.indent,
             current.line_spacing if current.line_spacing is not None else effective.line_spacing,
@@ -677,7 +736,7 @@ def _style_text(text: str, payload: bytes, fonts: tuple[str, ...],
         level = max(0, min(4, struct.unpack_from("<h", payload, position + 4)[0]))
         mask = struct.unpack_from("<I", payload, position + 6)[0]
         position, paragraph_style = _read_paragraph_properties(
-            payload, position + 10, mask
+            payload, position + 10, mask, fonts, scheme
         )
         if not count:
             break
@@ -716,6 +775,11 @@ def _style_text(text: str, payload: bytes, fonts: tuple[str, ...],
     bullets: list[bool] = []
     levels: list[int] = []
     bullet_chars: list[str | None] = []
+    bullet_typefaces: list[str | None] = []
+    bullet_colors: list[str | None] = []
+    bullet_sizes: list[int | None] = []
+    bullet_color_explicit: list[bool] = []
+    bullet_size_explicit: list[bool] = []
     left_margins: list[int | None] = []
     indents: list[int | None] = []
     line_spacings: list[int | None] = []
@@ -743,6 +807,27 @@ def _style_text(text: str, payload: bytes, fonts: tuple[str, ...],
             paragraph_style.bullet_char
             if paragraph_style.bullet_char is not None
             else master.bullet_char if master else None
+        )
+        bullet_typefaces.append(
+            paragraph_style.bullet_typeface
+            if paragraph_style.bullet_typeface is not None
+            else master.bullet_typeface if master else None
+        )
+        bullet_colors.append(
+            paragraph_style.bullet_color
+            if paragraph_style.bullet_color is not None
+            else master.bullet_color if master else None
+        )
+        bullet_sizes.append(
+            paragraph_style.bullet_size
+            if paragraph_style.bullet_size is not None
+            else master.bullet_size if master else None
+        )
+        bullet_color_explicit.append(
+            paragraph_style.bullet_color is not None
+        )
+        bullet_size_explicit.append(
+            paragraph_style.bullet_size is not None
         )
         left_margins.append(
             paragraph_style.left_margin
@@ -779,6 +864,11 @@ def _style_text(text: str, payload: bytes, fonts: tuple[str, ...],
         paragraph_bullets=tuple(bullets),
         paragraph_levels=tuple(levels),
         paragraph_bullet_chars=tuple(bullet_chars),
+        paragraph_bullet_typefaces=tuple(bullet_typefaces),
+        paragraph_bullet_colors=tuple(bullet_colors),
+        paragraph_bullet_sizes=tuple(bullet_sizes),
+        paragraph_bullet_color_explicit=tuple(bullet_color_explicit),
+        paragraph_bullet_size_explicit=tuple(bullet_size_explicit),
         paragraph_left_margins=tuple(left_margins),
         paragraph_indents=tuple(indents),
         paragraph_line_spacings=tuple(line_spacings),
@@ -813,6 +903,11 @@ def _apply_hyperlinks(content: TextContent, spans: list[tuple[int, int, str]]) -
         paragraph_bullets=content.paragraph_bullets,
         paragraph_levels=content.paragraph_levels,
         paragraph_bullet_chars=content.paragraph_bullet_chars,
+        paragraph_bullet_typefaces=content.paragraph_bullet_typefaces,
+        paragraph_bullet_colors=content.paragraph_bullet_colors,
+        paragraph_bullet_sizes=content.paragraph_bullet_sizes,
+        paragraph_bullet_color_explicit=content.paragraph_bullet_color_explicit,
+        paragraph_bullet_size_explicit=content.paragraph_bullet_size_explicit,
         paragraph_left_margins=content.paragraph_left_margins,
         paragraph_indents=content.paragraph_indents,
         paragraph_line_spacings=content.paragraph_line_spacings,
@@ -864,6 +959,21 @@ def _text_contents(source_records: list[Record], fonts: tuple[str, ...], masters
                 paragraph_levels=tuple(0 for _ in paragraphs),
                 paragraph_bullet_chars=tuple(
                     base.bullet_char if base else None for _ in paragraphs
+                ),
+                paragraph_bullet_typefaces=tuple(
+                    base.bullet_typeface if base else None for _ in paragraphs
+                ),
+                paragraph_bullet_colors=tuple(
+                    base.bullet_color if base else None for _ in paragraphs
+                ),
+                paragraph_bullet_sizes=tuple(
+                    base.bullet_size if base else None for _ in paragraphs
+                ),
+                paragraph_bullet_color_explicit=tuple(
+                    False for _ in paragraphs
+                ),
+                paragraph_bullet_size_explicit=tuple(
+                    False for _ in paragraphs
                 ),
                 paragraph_left_margins=tuple(
                     ruler_left if ruler_left is not None
@@ -929,7 +1039,7 @@ def _master_text_styles(powerpoint_document: bytes, document: Record, fonts: tup
                 break
             paragraph_mask = struct.unpack_from("<I", atom.payload, position)[0]
             position, paragraph_style = _read_paragraph_properties(
-                atom.payload, position + 4, paragraph_mask
+                atom.payload, position + 4, paragraph_mask, fonts, scheme
             )
             if position + 4 > len(atom.payload):
                 break
@@ -940,6 +1050,9 @@ def _master_text_styles(powerpoint_document: bytes, document: Record, fonts: tup
                 paragraph_style.alignment,
                 paragraph_style.bullet,
                 paragraph_style.bullet_char,
+                paragraph_style.bullet_typeface,
+                paragraph_style.bullet_color,
+                paragraph_style.bullet_size,
                 paragraph_style.left_margin,
                 paragraph_style.indent,
                 paragraph_style.line_spacing,
@@ -960,6 +1073,9 @@ def _master_text_styles(powerpoint_document: bytes, document: Record, fonts: tup
                 child_style.alignment if child_style.alignment is not None else parent_style.alignment,
                 child_style.bullet if child_style.bullet is not None else parent_style.bullet,
                 child_style.bullet_char or parent_style.bullet_char,
+                child_style.bullet_typeface or parent_style.bullet_typeface,
+                child_style.bullet_color or parent_style.bullet_color,
+                child_style.bullet_size if child_style.bullet_size is not None else parent_style.bullet_size,
                 child_style.left_margin if child_style.left_margin is not None else parent_style.left_margin,
                 child_style.indent if child_style.indent is not None else parent_style.indent,
                 child_style.line_spacing if child_style.line_spacing is not None else parent_style.line_spacing,
@@ -1429,6 +1545,32 @@ def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tu
                 elif vertical_anchor == "b":
                     top -= growth
                 height = fitted_height
+        bullet_colors = (
+            content.paragraph_bullet_colors
+            if is_placeholder
+            else tuple(
+                color
+                if index < len(content.paragraph_bullet_color_explicit)
+                and content.paragraph_bullet_color_explicit[index]
+                else None
+                for index, color in enumerate(
+                    content.paragraph_bullet_colors
+                )
+            )
+        )
+        bullet_sizes = (
+            content.paragraph_bullet_sizes
+            if is_placeholder
+            else tuple(
+                size
+                if index < len(content.paragraph_bullet_size_explicit)
+                and content.paragraph_bullet_size_explicit[index]
+                else None
+                for index, size in enumerate(
+                    content.paragraph_bullet_sizes
+                )
+            )
+        )
         result.append(TextBox(
             text=content.text,
             left=left,
@@ -1446,6 +1588,9 @@ def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tu
             line_dash=dash,
             paragraph_levels=content.paragraph_levels,
             paragraph_bullet_chars=content.paragraph_bullet_chars,
+            paragraph_bullet_typefaces=content.paragraph_bullet_typefaces,
+            paragraph_bullet_colors=bullet_colors,
+            paragraph_bullet_sizes=bullet_sizes,
             auto_fit=auto_fit,
             fit_shape_to_text=fit_shape_to_text,
             vertical_anchor=vertical_anchor,

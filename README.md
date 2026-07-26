@@ -28,7 +28,9 @@ faithful.
   font, color, and vertical anchoring for editable fields, while honoring
   `fMasterObjects` and `DocumentAtom.fOmitTitlePlace` visibility.
 - Restores positioned editable text, fonts, sizes, colors, bold/italic/underline,
-  paragraph alignment, bullets, rotation, flips, and safe external hyperlinks.
+  paragraph alignment, bullets (including legacy Wingdings/Webdings glyph
+  fonts, colors, and relative sizes), rotation, flips, and safe external
+  hyperlinks.
 - Preserves PNG, JPEG, GIF, TIFF, EMF, WMF, and PICT media, including cropping,
   position, rotation, and flips when present.
 - Recreates common editable shapes, including zero-axis horizontal/vertical

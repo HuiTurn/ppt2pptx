@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve legacy `TextPFException` bullet font, color, and relative-size
+  properties, so Wingdings/Webdings bullet characters remain editable symbols
+  instead of rendering as ordinary letters.
 - Preserve editable date, footer, and slide-number fields using the selected
   master's placeholder geometry and text styling; suppress inherited fields
   when master objects are disabled or title placeholders are omitted.
