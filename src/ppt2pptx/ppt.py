@@ -1002,19 +1002,21 @@ def _compose_matrix(parent: tuple[float, float, float, float, float, float],
             pa * ctx + pc * cty + ptx, pb * ctx + pd * cty + pty)
 
 def _transform_box(rect: tuple[int, int, int, int],
-                   matrix: tuple[float, float, float, float, float, float]
+                   matrix: tuple[float, float, float, float, float, float],
+                   minimum_extent: int = 1,
                    ) -> tuple[int, int, int, int]:
     left, top, right, bottom = rect
     a, b, c, d, tx, ty = matrix
     center_x, center_y = (left + right) / 2, (top + bottom) / 2
     mapped_x = a * center_x + c * center_y + tx
     mapped_y = b * center_x + d * center_y + ty
-    width = max(1, round(math.hypot(a, b) * abs(right - left)))
-    height = max(1, round(math.hypot(c, d) * abs(bottom - top)))
+    width = max(minimum_extent, round(math.hypot(a, b) * abs(right - left)))
+    height = max(minimum_extent, round(math.hypot(c, d) * abs(bottom - top)))
     return (round(mapped_x - width / 2), round(mapped_y - height / 2), width, height)
 
 def _transform_box_in_space(rect: tuple[int, int, int, int],
-                            space: _GroupSpace) -> tuple[int, int, int, int]:
+                            space: _GroupSpace,
+                            minimum_extent: int = 1) -> tuple[int, int, int, int]:
     matrix = _space_matrix(space)
     a, b, c, d, tx, ty = matrix
     scale_x, scale_y = math.hypot(a, b), math.hypot(c, d)
@@ -1036,31 +1038,47 @@ def _transform_box_in_space(rect: tuple[int, int, int, int],
         delta_y = (rect_center_y - coord_center_y) * scale
         mapped_x = abs_center_x + math.cos(angle) * delta_x - math.sin(angle) * delta_y
         mapped_y = abs_center_y + math.sin(angle) * delta_x + math.cos(angle) * delta_y
-        width = max(1, round(abs(right - left) * scale))
-        height = max(1, round(abs(bottom - top) * scale))
+        width = max(minimum_extent, round(abs(right - left) * scale))
+        height = max(minimum_extent, round(abs(bottom - top) * scale))
         return (round(mapped_x - width / 2), round(mapped_y - height / 2), width, height)
-    return _transform_box(rect, matrix)
+    return _transform_box(rect, matrix, minimum_extent)
 
-def _rect_to_box(left: int, top: int, right: int, bottom: int) -> tuple[int, int, int, int]:
-    return left, top, max(1, right - left), max(1, bottom - top)
+def _rect_to_box(
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    minimum_extent: int = 1,
+) -> tuple[int, int, int, int]:
+    return (
+        left,
+        top,
+        max(minimum_extent, right - left),
+        max(minimum_extent, bottom - top),
+    )
 
-def _anchor(children: list[Record], fallback_index: int, space: _GroupSpace | None = None) -> tuple[int, int, int, int]:
+def _anchor(
+    children: list[Record],
+    fallback_index: int,
+    space: _GroupSpace | None = None,
+    minimum_extent: int = 1,
+) -> tuple[int, int, int, int]:
     client = next((child for child in children if child.type == RT_OFFICEART_CLIENT_ANCHOR), None)
     if client is not None:
         rect = _client_rect(client.payload)
         if rect is not None:
-            return _rect_to_box(*rect)
+            return _rect_to_box(*rect, minimum_extent)
     child_anchor = next((child for child in children if child.type == RT_OFFICEART_CHILD_ANCHOR), None)
     if child_anchor is not None:
         rect = _child_rect(child_anchor.payload)
         if rect is not None:
             left, top, right, bottom = rect
             if space is not None:
-                return _transform_box_in_space(rect, space)
+                return _transform_box_in_space(rect, space, minimum_extent)
             if max(abs(left), abs(top), abs(right), abs(bottom)) > 100_000:
                 left, top, right, bottom = (round(value * 576 / 914400)
                                             for value in (left, top, right, bottom))
-            return _rect_to_box(left, top, right, bottom)
+            return _rect_to_box(left, top, right, bottom, minimum_extent)
     return 288, 288 + fallback_index * 576, 5184, 432
 
 def _group_space(group_shape: Record, parent: _GroupSpace | None) -> _GroupSpace | None:
@@ -1681,7 +1699,12 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
                 continue
         if fill is None and line is None and path is None:
             continue
-        left, top, width, height = _anchor(children, len(result), space)
+        left, top, width, height = _anchor(
+            children,
+            len(result),
+            space,
+            minimum_extent=0 if sp.instance == 20 else 1,
+        )
         transform = _combine_transform(
             _connector_transform(sp.instance, _transform(children, properties)),
             space,
@@ -2145,7 +2168,15 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
             left, top = max(0, shape.left), max(0, shape.top)
             right = min(slide_width, shape.left + shape.width)
             bottom = min(slide_height, shape.top + shape.height)
-            if right > left and bottom > top:
+            if (
+                (right > left and bottom > top)
+                or (
+                    shape.preset == "line"
+                    and right >= left
+                    and bottom >= top
+                    and (right > left or bottom > top)
+                )
+            ):
                 shapes.append(BasicShape(shape.preset, left, top, right - left, bottom - top,
                                          shape.fill_color, shape.line_color, shape.rotation,
                                          shape.flip_horizontal, shape.flip_vertical,
@@ -2158,7 +2189,15 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
         left, top = max(0, shape.left), max(0, shape.top)
         right = min(slide_width, shape.left + shape.width)
         bottom = min(slide_height, shape.top + shape.height)
-        if right > left and bottom > top:
+        if (
+            (right > left and bottom > top)
+            or (
+                shape.preset == "line"
+                and right >= left
+                and bottom >= top
+                and (right > left or bottom > top)
+            )
+        ):
             shapes.append(BasicShape(shape.preset, left, top, right - left, bottom - top,
                                      shape.fill_color, shape.line_color, shape.rotation,
                                      shape.flip_horizontal, shape.flip_vertical,
