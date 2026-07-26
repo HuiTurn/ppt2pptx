@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Resolve `SlideAtom.masterIdRef` through `MasterPersistAtom.persistIdRef` and
+  select the referenced main or title master for each slide, instead of
+  unconditionally flattening the first master in the record stream.
 - Inherit OfficeArt `anchorText` from matching master placeholders when a
   slide placeholder omits PID 135, restoring bottom-aligned legacy titles
   instead of forcing them to the vertical center.

@@ -114,3 +114,10 @@ equal-length fixture rewrite removes only the slide title's OfficeArt PID 135
 entry, leaving the corresponding master property intact. It verifies that the
 editable DrawingML text box inherits `anchor="b"`, produces no unrelated
 warning, and matches PowerPoint pixel-for-pixel.
+The controlled `tests/fixtures/visual_master_selection.ppt` fixture contains
+one blank slide whose selected layout master supplies a solid blue background
+while the first master does not. It verifies the
+`SlideAtom.masterIdRef` -> `MasterPersistAtom.persistIdRef` mapping, emits no
+warning, keeps PowerPoint's zero-shape structure census, and matches the source
+pixel-for-pixel. Apache POI `37625.ppt` additionally verifies selection of its
+legacy title master on slides 1 and 29 without regressing the other 27 slides.

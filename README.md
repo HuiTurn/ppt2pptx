@@ -16,6 +16,9 @@ faithful.
 - Preserves normal slide order and dimensions without mistaking masters or notes
   for slides, including append-only incremental saves with older document
   containers still present in the record stream.
+- Resolves each slide's `masterIdRef` through the current master persist list,
+  so layout/title-master backgrounds and decorations are taken from the
+  referenced master rather than the first master in the file.
 - Preserves hidden-slide state so excluded slides remain hidden during slide shows.
 - Respects each slide's `fMasterObjects` setting when flattening master
   decorations, including PowerPoint's "Hide Background Graphics" behavior.

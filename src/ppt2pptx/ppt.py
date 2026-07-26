@@ -14,6 +14,7 @@ from .errors import InvalidPpt
 RT_DOCUMENT = 1000
 RT_SLIDE = 1006
 RT_SLIDE_ATOM = 1007
+RT_MAIN_MASTER = 1016
 RT_SLIDE_LIST_WITH_TEXT = 4080
 RT_SLIDE_PERSIST_ATOM = 1011
 RT_SLIDE_SHOW_SLIDE_INFO_ATOM = 0x03F9
@@ -384,6 +385,38 @@ def _slide_entries(document: Record) -> list[tuple[int, int]]:
                 )
                 entries.append((reference, slide_id))
     return entries
+
+
+def _master_entries(document: Record) -> list[tuple[int, int]]:
+    entries: list[tuple[int, int]] = []
+    for container in descendants(document):
+        if container.type != RT_SLIDE_LIST_WITH_TEXT or container.instance != 1:
+            continue
+        for record in records(container.payload):
+            if record.type != RT_SLIDE_PERSIST_ATOM or len(record.payload) < 16:
+                continue
+            # MasterPersistAtom reuses SlidePersistAtom's record type.  Its
+            # persistIdRef is first and its stable masterId is at byte 12.
+            reference = struct.unpack_from("<I", record.payload, 0)[0]
+            master_id = struct.unpack_from("<I", record.payload, 12)[0]
+            if reference and master_id:
+                entries.append((reference, master_id))
+    return entries
+
+
+def _slide_master_id(slide: Record) -> int | None:
+    atom = next(
+        (
+            child
+            for child in descendants(slide)
+            if child.type == RT_SLIDE_ATOM and len(child.payload) >= 16
+        ),
+        None,
+    )
+    if atom is None:
+        return None
+    master_id = struct.unpack_from("<I", atom.payload, 12)[0]
+    return master_id or None
 
 
 def _slide_refs(document: Record) -> list[int]:
@@ -2321,7 +2354,23 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
     mapping = persist_directory(powerpoint_document)
     image_map = _pictures(document, pictures_stream)
     fonts = _fonts(document)
-    master_records = tuple(root for root in roots if root.type == 1016)
+    master_records = tuple(root for root in roots if root.type == RT_MAIN_MASTER)
+    master_records_by_id: dict[int, Record] = {}
+    for reference, master_id in _master_entries(document):
+        offset = mapping.get(reference)
+        if offset is None or offset >= len(powerpoint_document):
+            continue
+        try:
+            master_record = next(records(powerpoint_document, offset))
+        except (InvalidPpt, StopIteration):
+            continue
+        if master_record.type not in (RT_MAIN_MASTER, RT_SLIDE):
+            continue
+        master_records_by_id[master_id] = master_record
+    fallback_master = next(
+        iter(master_records_by_id.values()),
+        master_records[0] if master_records else None,
+    )
     scheme = _color_scheme(document, master_records)
     masters = _master_text_styles(powerpoint_document, document, fonts, scheme)
     hyperlinks = _hyperlinks(document)
@@ -2384,11 +2433,19 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
                 else ()
             )
             unbound_note_index += 1
-        slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_records[0] if master_records else None, notes, width, height))
+        master_record = master_records_by_id.get(
+            _slide_master_id(slide_record),
+            fallback_master,
+        )
+        slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_record, notes, width, height))
     if not slides:
         for slide_record in descendants(document):
             if slide_record.type == RT_SLIDE:
-                slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_records[0] if master_records else None, (), width, height))
+                master_record = master_records_by_id.get(
+                    _slide_master_id(slide_record),
+                    fallback_master,
+                )
+                slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_record, (), width, height))
     excluded_offsets: set[int] = set()
     for slide in slides:
         excluded_offsets |= slide.excluded_offsets
