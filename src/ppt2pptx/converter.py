@@ -130,6 +130,11 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                 "background_color_end": slide.background_color_end,
                 "background_gradient_angle": slide.background_gradient_angle,
                 "background_gradient_type": slide.background_gradient_type,
+                "background_image": ({
+                    "extension": slide.background_image[1],
+                    "content_type": slide.background_image[2],
+                    "byte_count": len(slide.background_image[0]),
+                } if slide.background_image else None),
                 "hidden": slide.hidden,
                 "notes": list(slide.notes),
                 "header_footer": ({
@@ -174,7 +179,8 @@ def convert(source: str | Path, destination: str | Path | None = None, *, limits
             ],
         )
     if not presentation.slides: report.warning("NO_SLIDES_FOUND", "no normal slide records could be recovered from the presentation")
-    elif any(not (slide.text_boxes or slide.pictures or slide.shapes or slide.header_footer or slide.notes)
+    elif any(not (slide.text_boxes or slide.pictures or slide.shapes or slide.background_image
+                  or slide.header_footer or slide.notes)
              for slide in presentation.slides):
         report.warning("EMPTY_SLIDE_CONTENT", "one or more slides had no recoverable editable content")
     write_pptx(output, presentation)

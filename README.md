@@ -21,8 +21,8 @@ faithful.
   paragraph alignment, bullets, rotation, flips, and safe external hyperlinks.
 - Preserves PNG, JPEG, GIF, TIFF, EMF, WMF, and PICT media, including cropping,
   position, rotation, and flips when present.
-- Recreates common editable shapes, solid/gradient backgrounds, comments, speaker
-  notes, slide numbers, dates, headers, and footers.
+- Recreates common editable shapes, solid/gradient/picture backgrounds, comments,
+  speaker notes, slide numbers, dates, headers, and footers.
 - Reconstructs legacy native tables (regular grids of rectangle cells) as
   editable DrawingML `<a:tbl>` graphic frames with preserved cell fills and
   1-pt borders, instead of flattening them into scattered shapes.
@@ -56,10 +56,10 @@ print(result.report.to_dict())
 
 Charts, SmartArt, animation timelines, audio/video playback, embedded OLE
 objects, and complex freeform or grouped master geometry remain incomplete.
-Solid and common gradient backgrounds are retained, while advanced fills and
-effects may be approximated. PICT data is preserved, but rendering depends on
-the PPTX consumer. PowerPoint 95 and earlier files use a different record
-format and are deliberately rejected with a clear error.
+Solid, common gradient, and stretched picture backgrounds are retained, while
+advanced fills and effects may be approximated. PICT data is preserved, but
+rendering depends on the PPTX consumer. PowerPoint 95 and earlier files use a
+different record format and are deliberately rejected with a clear error.
 
 Unsupported or approximated advanced objects are reported with object-backed
 warning codes such as `ANIMATION_OMITTED`, `AUDIO_OMITTED`, `VIDEO_OMITTED`,

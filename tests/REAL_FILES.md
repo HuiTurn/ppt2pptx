@@ -88,3 +88,9 @@ PowerPoint-saved poster picture carrying `II_MediaAction` produces exactly one
 slide-bound `MEDIA_ACTION_OMITTED` warning. The Office census must show media
 `1 -> 0` while picture count remains `1 -> 1`; the static poster rendering must
 remain pixel-identical.
+The controlled `tests/fixtures/visual_background_picture.ppt` fixture contains
+one embedded PNG used through the slide background's OfficeArt
+`fillType=picture`/`fillBlip` properties plus one editable foreground textbox.
+It verifies that the converter writes a DrawingML background relationship,
+does not turn the background into a picture shape, emits no lossy warning, and
+matches PowerPoint's source rendering pixel-for-pixel.

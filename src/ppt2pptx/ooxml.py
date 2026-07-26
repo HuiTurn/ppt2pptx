@@ -297,7 +297,7 @@ def _table_frames(tables: tuple[Table, ...], start_id: int) -> tuple[list[str], 
         next_id += 1
     return frames, next_id
 
-def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, background_gradient_angle: int | None, background_gradient_type: int | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, tables: tuple[Table, ...], hidden: bool) -> str:
+def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basic_shapes: tuple[BasicShape, ...], background_color: str | None, background_color_end: str | None, background_gradient_angle: int | None, background_gradient_type: int | None, background_image_rid: str | None, hyperlink_ids: dict[str, str], header_footer: HeaderFooter | None, slide_width: int, slide_height: int, slide_number: int, tables: tuple[Table, ...], hidden: bool) -> str:
     background_drawing_shapes = []
     foreground_drawing_shapes = []
     for index, shape in enumerate(basic_shapes, 2):
@@ -380,7 +380,14 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
             else overlay_picture_shapes
         )
         target.append(picture_xml)
-    if background_color and background_color_end:
+    if background_image_rid:
+        background = (
+            '<p:bg><p:bgPr><a:blipFill dpi="0" rotWithShape="1">'
+            f'<a:blip r:embed="{background_image_rid}"/>'
+            '<a:stretch><a:fillRect/></a:stretch></a:blipFill>'
+            '<a:effectLst/></p:bgPr></p:bg>'
+        )
+    elif background_color and background_color_end:
         stops = (
             f'<a:gs pos="0"><a:srgbClr val="{background_color}"/></a:gs>'
             f'<a:gs pos="50000"><a:srgbClr val="{background_color_end}"/></a:gs>'
@@ -476,6 +483,15 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
                 picture_refs: list[tuple[Picture, str]] = []
                 picture_rels: list[str] = []
                 next_relation = 2
+                background_image_rid = None
+                if slides[i-1].background_image is not None:
+                    data, extension, _content_type = slides[i-1].background_image
+                    background_image_rid = f"rId{next_relation}"
+                    next_relation += 1
+                    filename = f"image{image_index}.{extension}"
+                    picture_rels.append(f'<Relationship Id="{background_image_rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/{filename}"/>')
+                    archive.writestr(f'ppt/media/{filename}', data)
+                    image_index += 1
                 for picture in slides[i-1].pictures:
                     relation_id = f"rId{next_relation}"
                     next_relation += 1
@@ -507,7 +523,7 @@ def write_pptx(destination: str | Path, presentation: Presentation) -> None:
                     picture_rels.append(f'<Relationship Id="{notes_relation}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide{i}.xml"/>')
                     archive.writestr(f'ppt/notesSlides/notesSlide{i}.xml', _notes_slide(slides[i-1].notes))
                     archive.writestr(f'ppt/notesSlides/_rels/notesSlide{i}.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="../slides/slide' + str(i) + '.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster" Target="../notesMasters/notesMaster1.xml"/></Relationships>')
-                archive.writestr(f'ppt/slides/slide{i}.xml', _slide(slides[i-1].text_boxes, picture_refs, slides[i-1].shapes, slides[i-1].background_color, slides[i-1].background_color_end, slides[i-1].background_gradient_angle, slides[i-1].background_gradient_type, hyperlink_ids, slides[i-1].header_footer, presentation.width, presentation.height, i, slides[i-1].tables, slides[i-1].hidden))
+                archive.writestr(f'ppt/slides/slide{i}.xml', _slide(slides[i-1].text_boxes, picture_refs, slides[i-1].shapes, slides[i-1].background_color, slides[i-1].background_color_end, slides[i-1].background_gradient_angle, slides[i-1].background_gradient_type, background_image_rid, hyperlink_ids, slides[i-1].header_footer, presentation.width, presentation.height, i, slides[i-1].tables, slides[i-1].hidden))
                 archive.writestr(f'ppt/slides/_rels/slide{i}.xml.rels', '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>' + ''.join(picture_rels) + '</Relationships>')
             master_rid = len(slides) + 1
             rels.append(f'<Relationship Id="rId{master_rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>')
