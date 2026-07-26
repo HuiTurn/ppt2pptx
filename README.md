@@ -72,7 +72,10 @@ external objects rather than their container/storage records and use
 `ExObjRefAtom` to identify the slide that owns each object. Legacy MS Graph and
 Excel chart ProgIDs inside an OLE container are classified as one slide-bound
 `CHART_OMITTED` object instead of also producing a generic OLE warning. Files
-with those objects do not receive a blanket advanced-feature warning. A legacy
+with incremental-save history use only the latest `ExternalOleObjectAtom` per
+object ID and references inside current slide persist ranges, so stale chart or
+OLE revisions do not inflate warning counts. Files with those objects do not
+receive a blanket advanced-feature warning. A legacy
 `AnimationInfo` container and its child atom likewise count as one slide-bound
 animation object, not two record-level losses. PowerPoint 2002+ `___PPT10`
 timing trees are inspected for actual effect nodes and matched to the same

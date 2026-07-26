@@ -55,6 +55,46 @@ def chart_document() -> bytes:
     return rec(1000, container + rec(1006, reference))
 
 
+def revised_chart_document(*, latest_is_chart: bool = True) -> bytes:
+    ex_obj_id = 7
+
+    def container(chart: bool) -> bytes:
+        atom = rec(
+            RT_EXTERNAL_OLE_OBJECT_ATOM,
+            struct.pack("<6I", 1, 0, ex_obj_id, 4, 27, 0),
+            version=1,
+        )
+        marker = (
+            rec(
+                RT_CSTRING,
+                "MSGraph.Chart.8".encode("utf-16le"),
+                version=0,
+                instance=2,
+            )
+            if chart
+            else b""
+        )
+        return rec(RT_EXTERNAL_OLE_EMBED, atom + marker)
+
+    stale_reference = rec(
+        RT_EXTERNAL_OBJECT_REF_ATOM,
+        struct.pack("<I", ex_obj_id),
+        version=0,
+    )
+    active_reference = rec(
+        RT_EXTERNAL_OBJECT_REF_ATOM,
+        struct.pack("<I", ex_obj_id),
+        version=0,
+    )
+    return rec(
+        1000,
+        container(True)
+        + stale_reference
+        + container(latest_is_chart)
+        + rec(1006, active_reference),
+    )
+
+
 def powerpoint_available() -> bool:
     if sys.platform != "win32":
         return False
@@ -81,6 +121,34 @@ def powerpoint_available() -> bool:
 
 
 class ChartDiagnosticTests(unittest.TestCase):
+    def test_collapses_incremental_chart_revisions_into_one_live_object(self):
+        features = {
+            item.code: item
+            for item in detect_lossy_features(revised_chart_document())
+        }
+
+        self.assertEqual(set(features), {"CHART_OMITTED"})
+        feature = features["CHART_OMITTED"]
+        self.assertEqual(feature.count, 1)
+        self.assertEqual(len(feature.locations), 1)
+        self.assertEqual(feature.locations[0].slide_index, 1)
+        self.assertEqual(
+            feature.locations[0].record_type,
+            RT_EXTERNAL_OBJECT_REF_ATOM,
+        )
+
+    def test_latest_ole_revision_controls_object_classification(self):
+        features = {
+            item.code: item
+            for item in detect_lossy_features(
+                revised_chart_document(latest_is_chart=False)
+            )
+        }
+
+        self.assertEqual(set(features), {"EMBEDDED_OLE_OMITTED"})
+        self.assertEqual(features["EMBEDDED_OLE_OMITTED"].count, 1)
+        self.assertEqual(len(features["EMBEDDED_OLE_OMITTED"].locations), 1)
+
     def test_classifies_embedded_chart_as_one_slide_bound_object(self):
         features = {item.code: item for item in detect_lossy_features(chart_document())}
 
