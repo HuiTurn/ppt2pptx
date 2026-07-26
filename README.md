@@ -21,8 +21,10 @@ faithful.
   paragraph alignment, bullets, rotation, flips, and safe external hyperlinks.
 - Preserves PNG, JPEG, GIF, TIFF, EMF, WMF, and PICT media, including cropping,
   position, rotation, and flips when present.
-- Recreates common editable shapes, solid/gradient/picture backgrounds, comments,
-  speaker notes, slide numbers, dates, headers, and footers.
+- Recreates common editable shapes, including zero-axis horizontal/vertical
+  lines without introducing a diagonal drift, plus solid/gradient/picture
+  backgrounds, comments, speaker notes, slide numbers, dates, headers, and
+  footers.
 - Reconstructs legacy native tables (regular grids of rectangle cells) as
   editable DrawingML `<a:tbl>` graphic frames with preserved cell fills and
   1-pt borders, instead of flattening them into scattered shapes.

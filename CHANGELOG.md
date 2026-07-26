@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve zero-width and zero-height OfficeArt line anchors through group
+  transforms and DrawingML emission, avoiding the one-unit diagonal drift that
+  made dense master grids thicker and misaligned.
 - Preserve OfficeArt `fillType=picture` slide backgrounds as DrawingML
   `<a:blipFill>` background relationships, keeping the image out of the shape
   tree so foreground objects remain editable and PowerPoint structure counts

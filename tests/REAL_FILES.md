@@ -94,3 +94,11 @@ one embedded PNG used through the slide background's OfficeArt
 It verifies that the converter writes a DrawingML background relationship,
 does not turn the background into a picture shape, emits no lossy warning, and
 matches PowerPoint's source rendering pixel-for-pixel.
+The controlled `tests/fixtures/visual_zero_extent_lines.ppt` fixture recreates
+54 individual master lines from the grouped grid in pinned Apache POI
+`37625.ppt` test data while removing all unrelated slide/master objects and
+group coordinators. It verifies that zero-width vertical and zero-height
+horizontal anchors remain zero in the parsed model and DrawingML transform
+instead of becoming slightly diagonal one-unit boxes. The source has no
+slide-local shapes; the output's 54 editable shapes are the intentionally
+flattened master grid and produce no conversion warning.
