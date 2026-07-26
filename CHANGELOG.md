@@ -14,6 +14,9 @@
 - Classify legacy MS Graph/Excel chart ProgIDs within their OLE container so
   one chart produces one slide-bound `CHART_OMITTED` diagnostic rather than a
   document-level chart warning plus a duplicate generic OLE warning.
+- Collapse incremental-save OLE/chart revisions by external object ID, retain
+  only references in current slide persist ranges, and classify the latest
+  object atom so stale saved revisions cannot inflate warning counts.
 - Collapse each legacy `AnimationInfo` container and child atom into one
   slide-bound `ANIMATION_OMITTED` diagnostic, so one animated shape is counted
   once rather than once per binary record.

@@ -2914,7 +2914,7 @@ def _ole_object_diagnostics(
         record for record in all_records if record.type in _OLE_CONTAINER_DIAGNOSTICS
     ]
     references: dict[int, list[Record]] = {}
-    atoms: list[tuple[Record, int, int]] = []
+    all_atoms: list[tuple[Record, int, int]] = []
     for record in all_records:
         if record.type == RT_EXTERNAL_OBJECT_REF_ATOM and len(record.payload) >= 4:
             ex_obj_id = struct.unpack_from("<I", record.payload)[0]
@@ -2922,12 +2922,53 @@ def _ole_object_diagnostics(
         elif record.type == RT_EXTERNAL_OLE_OBJECT_ATOM and len(record.payload) >= 20:
             ole_type = struct.unpack_from("<I", record.payload, 4)[0]
             ex_obj_id = struct.unpack_from("<I", record.payload, 8)[0]
-            atoms.append((record, ole_type, ex_obj_id))
+            all_atoms.append((record, ole_type, ex_obj_id))
+
+    # Fast/incremental saves retain historical Document/Slide records. Only
+    # references inside the current slide persist ranges describe live slide
+    # objects; otherwise one chart can be counted once per saved revision.
+    if ranges:
+        current_references: dict[int, list[Record]] = {}
+        for ex_obj_id, records_for_object in references.items():
+            current = [
+                record
+                for record in records_for_object
+                if _slide_index_for_offset(record.offset, ranges) is not None
+            ]
+            if current:
+                current_references[ex_obj_id] = current
+        references = current_references
+
+    # The latest ExternalOleObjectAtom for an object ID is the current
+    # representation. Older atoms remain useful only to prove their enclosing
+    # containers are historical, not as additional objects.
+    latest_atoms: dict[int, tuple[Record, int, int]] = {}
+    for item in all_atoms:
+        atom, _ole_type, ex_obj_id = item
+        if ex_obj_id in references:
+            previous = latest_atoms.get(ex_obj_id)
+            if previous is None or atom.offset > previous[0].offset:
+                latest_atoms[ex_obj_id] = item
+    atoms = tuple(latest_atoms.values())
 
     diagnostics: list[
         tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
     ] = []
+    chart_markers_by_container: dict[int, tuple[Record, ...]] = {}
     handled_chart_markers: set[int] = set()
+    for container in ole_containers:
+        start = container.offset + 8
+        end = start + len(container.payload)
+        chart_markers = tuple(
+            item
+            for item in all_records
+            if start <= item.offset < end
+            and item.type in (RT_CSTRING, RT_PROG_BINARY_TAG, RT_BINARY_TAG_DATA_BLOB)
+            and _payload_has_marker(item.payload, _CHART_MARKERS)
+        )
+        chart_markers_by_container[container.offset] = chart_markers
+        handled_chart_markers.update(item.offset for item in chart_markers)
+
     for atom, ole_type, ex_obj_id in atoms:
         code, message, object_kind = _OLE_TYPE_DIAGNOSTICS.get(
             ole_type,
@@ -2941,14 +2982,11 @@ def _ole_object_diagnostics(
             ),
             None,
         )
-        chart_markers = [
-            item
-            for item in all_records
+        chart_markers = (
+            chart_markers_by_container.get(container.offset, ())
             if container is not None
-            and container.offset + 8 <= item.offset < container.offset + 8 + len(container.payload)
-            and item.type in (RT_CSTRING, RT_PROG_BINARY_TAG, RT_BINARY_TAG_DATA_BLOB)
-            and _payload_has_marker(item.payload, _CHART_MARKERS)
-        ]
+            else ()
+        )
         if chart_markers:
             code = "CHART_OMITTED"
             message = (
@@ -2956,7 +2994,6 @@ def _ole_object_diagnostics(
                 "preview media may be preserved"
             )
             object_kind = "chart"
-            handled_chart_markers.update(item.offset for item in chart_markers)
         object_references = references.get(ex_obj_id, [])
         locations = tuple(
             LossyFeatureLocation(
@@ -2987,7 +3024,7 @@ def _ole_object_diagnostics(
         )
         diagnostics.append((code, message, record_types, atom.offset, locations))
 
-    atom_offsets = {atom.offset for atom, _ole_type, _ex_obj_id in atoms}
+    atom_offsets = {atom.offset for atom, _ole_type, _ex_obj_id in all_atoms}
     fallback_containers = 0
     for record in all_records:
         mapped = _OLE_CONTAINER_DIAGNOSTICS.get(record.type)
@@ -2998,11 +3035,19 @@ def _ole_object_diagnostics(
         if any(start <= atom_offset < end for atom_offset in atom_offsets):
             continue
         code, message, object_kind = mapped
+        chart_markers = chart_markers_by_container.get(record.offset, ())
+        if chart_markers:
+            code = "CHART_OMITTED"
+            message = (
+                "legacy chart data and editability were omitted; "
+                "preview media may be preserved"
+            )
+            object_kind = "chart"
         diagnostics.append(
             (
                 code,
                 message,
-                (record.type,),
+                tuple(sorted({record.type, *(item.type for item in chart_markers)})),
                 record.offset,
                 (
                     LossyFeatureLocation(
@@ -3016,7 +3061,7 @@ def _ole_object_diagnostics(
         )
         fallback_containers += 1
 
-    if not atoms and fallback_containers == 0:
+    if not all_atoms and fallback_containers == 0:
         for record in all_records:
             if record.type != RT_EXTERNAL_OLE_OBJECT_STG:
                 continue
