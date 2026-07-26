@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Inherit OfficeArt `anchorText` from matching master placeholders when a
+  slide placeholder omits PID 135, restoring bottom-aligned legacy titles
+  instead of forcing them to the vertical center.
 - Honor `SlideAtom.fMasterObjects` when flattening legacy master decorations,
   so slides with "Hide Background Graphics" no longer gain unwanted master
   lines, logos, pictures, or text.

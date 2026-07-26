@@ -108,3 +108,9 @@ one large red master rectangle and one blue slide-local rectangle, with
 `DisplayMasterShapes=False` property. The output must retain exactly the one
 slide-local editable shape, emit no warning, and match the PowerPoint source
 render pixel-for-pixel.
+The controlled `tests/fixtures/visual_placeholder_anchor.ppt` fixture contains
+one PowerPoint-generated title whose master uses `anchorText=bottom`. Its
+equal-length fixture rewrite removes only the slide title's OfficeArt PID 135
+entry, leaving the corresponding master property intact. It verifies that the
+editable DrawingML text box inherits `anchor="b"`, produces no unrelated
+warning, and matches PowerPoint pixel-for-pixel.

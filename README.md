@@ -19,6 +19,8 @@ faithful.
 - Preserves hidden-slide state so excluded slides remain hidden during slide shows.
 - Respects each slide's `fMasterObjects` setting when flattening master
   decorations, including PowerPoint's "Hide Background Graphics" behavior.
+- Inherits vertical text anchoring from corresponding master placeholders when
+  the slide placeholder does not store its own OfficeArt `anchorText`.
 - Restores positioned editable text, fonts, sizes, colors, bold/italic/underline,
   paragraph alignment, bullets, rotation, flips, and safe external hyperlinks.
 - Preserves PNG, JPEG, GIF, TIFF, EMF, WMF, and PICT media, including cropping,

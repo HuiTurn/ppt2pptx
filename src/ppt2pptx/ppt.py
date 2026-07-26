@@ -1179,6 +1179,56 @@ def _is_placeholder(shape: Record) -> bool:
             continue
     return False
 
+def _placeholder_placement_id(shape: Record) -> int | None:
+    for child in _direct_children(shape):
+        if child.type != RT_OFFICEART_CLIENT_DATA:
+            continue
+        try:
+            for atom in descendants(child):
+                if (
+                    atom.type == RT_OE_PLACEHOLDER_ATOM
+                    and len(atom.payload) >= 5
+                ):
+                    return atom.payload[4]
+        except InvalidPpt:
+            continue
+    return None
+
+def _master_placeholder_text_anchors(
+    master: Record | None,
+) -> dict[int, int]:
+    if master is None:
+        return {}
+    master_anchors: dict[int, int] = {}
+    for shape, _space in _iter_sp_containers(master):
+        placement_id = _placeholder_placement_id(shape)
+        if placement_id is None:
+            continue
+        fopt = next(
+            (
+                child
+                for child in _direct_children(shape)
+                if child.type == RT_OFFICEART_FOPT
+            ),
+            None,
+        )
+        properties = _fopt_properties(fopt) if fopt else {}
+        if 135 in properties:
+            master_anchors[placement_id] = properties[135]
+    master_for_slide = {
+        13: 1,   # PT_Title -> PT_MasterTitle
+        14: 2,   # PT_Body -> PT_MasterBody
+        15: 3,   # PT_CenterTitle -> PT_MasterCenterTitle
+        16: 4,   # PT_SubTitle -> PT_MasterSubTitle
+        17: 1,   # PT_VerticalTitle -> PT_MasterTitle
+        18: 2,   # PT_VerticalBody -> PT_MasterBody
+    }
+    return {
+        slide_id: master_anchors[master_id]
+        for slide_id, master_id in master_for_slide.items()
+        if master_id in master_anchors
+    }
+
 def _is_background_shape(children: list[Record]) -> bool:
     sp = next((child for child in children if child.type == 0xF00A and len(child.payload) >= 8), None)
     if sp is None:
@@ -1260,7 +1310,7 @@ def _minimum_wrapped_height(
     )
     return round(text_height + vertical_insets)
 
-def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...], *, skip_placeholders: bool = False, exclude: set[int] | None = None) -> list[TextBox]:
+def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...], *, skip_placeholders: bool = False, exclude: set[int] | None = None, placeholder_text_anchors: dict[int, int] | None = None) -> list[TextBox]:
     result: list[TextBox] = []
     for shape, space in _iter_sp_containers(slide):
         if exclude is not None and shape.offset in exclude:
@@ -1289,13 +1339,21 @@ def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tu
         transform = _combine_transform(_transform(children, properties), space)
         sp = next((child for child in children if child.type == 0xF00A), None)
         preset = SHAPE_PRESETS.get(sp.instance, "rect") if sp is not None else "rect"
-        text_anchor = properties.get(135, 0)
+        text_anchor = properties.get(135)
+        if text_anchor is None and placeholder_text_anchors:
+            placement_id = _placeholder_placement_id(shape)
+            if placement_id is not None:
+                text_anchor = placeholder_text_anchors.get(placement_id)
         vertical_anchor = (
             "ctr" if text_anchor in (1, 4)
             else "b" if text_anchor in (2, 5)
             else None
         )
-        if 135 not in properties and is_placeholder and content.text_type in (0, 6):
+        if (
+            text_anchor is None
+            and is_placeholder
+            and content.text_type in (0, 6)
+        ):
             vertical_anchor = "ctr"
         text_flags = properties.get(191, 0)
         auto_fit = (
@@ -2124,6 +2182,7 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
     slide_boxes = _shape_text_boxes(
         slide_record, external_text, fonts, masters, hyperlinks, scheme,
         exclude=table_excluded,
+        placeholder_text_anchors=_master_placeholder_text_anchors(master_record),
     )
     if not slide_boxes:
         texts = [value for child in descendants(slide_record) if (value := _text(child))]
