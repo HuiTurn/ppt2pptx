@@ -120,6 +120,8 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                      "fill_back_color": shape.fill_back_color,
                      "line_color": shape.line_color,
                      "line_dash": shape.line_dash, "line_width": shape.line_width,
+                     "line_pattern": shape.line_pattern,
+                     "line_back_color": shape.line_back_color,
                      "line_head": shape.line_head, "line_tail": shape.line_tail,
                      "adjustments": shape.adjustments,
                      "rotation": shape.rotation, "flip_horizontal": shape.flip_horizontal,

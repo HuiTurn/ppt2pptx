@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve the legacy 8x8 DIB used by OfficeArt `msolinePattern` `pct30`
+  outlines as editable DrawingML `<a:pattFill>` lines instead of replacing
+  them with visually heavier solid strokes.
 - Resolve `SlideAtom.masterIdRef` through `MasterPersistAtom.persistIdRef` and
   select the referenced main or title master for each slide, instead of
   unconditionally flattening the first master in the record stream.

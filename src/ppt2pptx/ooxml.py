@@ -160,6 +160,8 @@ def _line_xml(
     width: int | None = None,
     head: tuple[str, str | None, str | None] | None = None,
     tail: tuple[str, str | None, str | None] | None = None,
+    pattern: str | None = None,
+    back_color: str | None = None,
 ) -> str:
     width_attr = f' w="{width}"' if width is not None else ""
     if not color:
@@ -176,7 +178,8 @@ def _line_xml(
         if arrow_length:
             attributes += f' len="{arrow_length}"'
         ends += f"<a:{tag}{attributes}/>"
-    return f'<a:ln{width_attr}><a:solidFill><a:srgbClr val="{color}"/></a:solidFill>{dash_xml}{ends}</a:ln>'
+    fill = _fill_xml(color, pattern, back_color)
+    return f'<a:ln{width_attr}>{fill}{dash_xml}{ends}</a:ln>'
 
 def _path_xml(shape: BasicShape) -> str:
     if not shape.path:
@@ -305,6 +308,7 @@ def _slide(parts: tuple[TextBox, ...], pictures: list[tuple[Picture, str]], basi
         line = _line_xml(
             shape.line_color, shape.line_dash, shape.line_width,
             shape.line_head, shape.line_tail,
+            shape.line_pattern, shape.line_back_color,
         )
         geom = _path_xml(shape)
         left, top, width, height = _xfrm_box(

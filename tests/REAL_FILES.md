@@ -121,3 +121,9 @@ while the first master does not. It verifies the
 warning, keeps PowerPoint's zero-shape structure census, and matches the source
 pixel-for-pixel. Apache POI `37625.ppt` additionally verifies selection of its
 legacy title master on slides 1 and 29 without regressing the other 27 slides.
+The controlled `tests/fixtures/visual_pattern_line.ppt` fixture copies one
+patterned grid line from pinned Apache POI `37625.ppt` test data into a
+PowerPoint-generated slide. It verifies that OfficeArt
+`lineType=msolinePattern` plus its 8x8 DIB `lineFillBlip` becomes an editable
+DrawingML `pct30` line fill with matching foreground/background colors, no
+warning, identical one-shape structure, and pixel-identical rendering.
