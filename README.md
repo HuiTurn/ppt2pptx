@@ -81,6 +81,9 @@ bound to their timing effect by shape/build ID, so paragraph sequencing,
 direction, and automatic-delay loss is represented by that same object warning.
 Legacy chart build settings are linked the same way, while chart editability
 loss remains a separate `CHART_OMITTED` diagnostic.
+PowerPoint-saved SmartArt is detected from the owning shape's `metroBlob`
+DrawingML package and produces one slide-bound
+`DIAGRAM_OR_SMARTART_OMITTED` diagnostic when only its preview is retained.
 
 ## Development
 
@@ -104,8 +107,8 @@ exports per-slide PNGs from the source `.ppt` and converted `.pptx`, then writes
 metrics and diffs. Each side runs in an isolated `DispatchEx` instance; the
 report records the owned process IDs, and cleanup never targets unrelated
 PowerPoint processes. It also records PowerPoint's source/output object counts
-and per-slide structure differences for text, pictures, tables, charts, groups,
-OLE/media, comments, and speaker notes:
+and per-slide structure differences for text, pictures, tables, charts,
+SmartArt, groups, OLE/media, comments, and speaker notes:
 
 ```console
 PYTHONPATH=src python scripts/make_visual_fixture.py -o tests/fixtures/visual_minimal.ppt
