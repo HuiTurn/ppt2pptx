@@ -24,6 +24,9 @@ faithful.
   decorations, including PowerPoint's "Hide Background Graphics" behavior.
 - Inherits vertical text anchoring from corresponding master placeholders when
   the slide placeholder does not store its own OfficeArt `anchorText`.
+- Inherits master date/footer/slide-number placeholder geometry, alignment,
+  font, color, and vertical anchoring for editable fields, while honoring
+  `fMasterObjects` and `DocumentAtom.fOmitTitlePlace` visibility.
 - Restores positioned editable text, fonts, sizes, colors, bold/italic/underline,
   paragraph alignment, bullets, rotation, flips, and safe external hyperlinks.
 - Preserves PNG, JPEG, GIF, TIFF, EMF, WMF, and PICT media, including cropping,

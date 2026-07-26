@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve editable date, footer, and slide-number fields using the selected
+  master's placeholder geometry and text styling; suppress inherited fields
+  when master objects are disabled or title placeholders are omitted.
 - Preserve the legacy 8x8 DIB used by OfficeArt `msolinePattern` `pct30`
   outlines as editable DrawingML `<a:pattFill>` lines instead of replacing
   them with visually heavier solid strokes.

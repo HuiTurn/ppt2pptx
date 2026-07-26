@@ -127,3 +127,11 @@ PowerPoint-generated slide. It verifies that OfficeArt
 `lineType=msolinePattern` plus its 8x8 DIB `lineFillBlip` becomes an editable
 DrawingML `pct30` line fill with matching foreground/background colors, no
 warning, identical one-shape structure, and pixel-identical rendering.
+The controlled `tests/fixtures/visual_header_footer_master.ppt` fixture has one
+blank slide and one fixed date field whose selected master places a blue
+14-point Tahoma placeholder at the bottom edge. It verifies editable field
+inheritance for geometry, alignment, vertical anchoring, font, and color with
+no warning, identical one-text-shape structure, and pixel-identical rendering.
+Apache POI `37625.ppt` additionally exercises document-level date/footer values
+across 29 slides, including `fMasterObjects` suppression and
+`DocumentAtom.fOmitTitlePlace` on title-master slides.

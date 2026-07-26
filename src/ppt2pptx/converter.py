@@ -18,6 +18,25 @@ class ConversionResult:
     slide_count: int
     presentation: Presentation
 
+def _placeholder_summary(box) -> dict[str, object] | None:
+    if box is None:
+        return None
+    run = box.runs[0] if box.runs else None
+    return {
+        "left": box.left,
+        "top": box.top,
+        "width": box.width,
+        "height": box.height,
+        "alignment": (
+            box.paragraph_alignments[0]
+            if box.paragraph_alignments else None
+        ),
+        "vertical_anchor": box.vertical_anchor,
+        "font_size": run.font_size if run else None,
+        "color": run.color if run else None,
+        "typeface": run.typeface if run else None,
+    }
+
 def _load(source: str | Path, limits: Limits | None = None, report: ConversionReport | None = None, password: str | None = None) -> tuple[Presentation, bytes]:
     compound = CompoundFile.from_path(source, limits)
     current_user = compound.open_stream("Current User")
@@ -145,6 +164,15 @@ def inspect_ppt(source: str | Path, *, limits: Limits | None = None, password: s
                     "header_text": slide.header_footer.header_text,
                     "footer_text": slide.header_footer.footer_text,
                     "show_slide_number": slide.header_footer.show_slide_number,
+                    "date_placeholder": _placeholder_summary(
+                        slide.header_footer.date_placeholder
+                    ),
+                    "footer_placeholder": _placeholder_summary(
+                        slide.header_footer.footer_placeholder
+                    ),
+                    "slide_number_placeholder": _placeholder_summary(
+                        slide.header_footer.slide_number_placeholder
+                    ),
                 } if slide.header_footer else None),
                 "comments": [
                     {"author": comment.author, "initials": comment.initials,
