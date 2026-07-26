@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import csv
 import hashlib
+import io
 import json
 from pathlib import Path
 import platform
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -103,43 +106,95 @@ def _cleanup_owned_apps() -> None:
 atexit.register(_cleanup_owned_apps)
 
 
+def _powerpoint_pids() -> set[int]:
+    """Return current POWERPNT.EXE PIDs without obtaining termination handles."""
+    completed = subprocess.run(
+        [
+            "tasklist",
+            "/FI",
+            "IMAGENAME eq POWERPNT.EXE",
+            "/FO",
+            "CSV",
+            "/NH",
+        ],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+    )
+    pids: set[int] = set()
+    for row in csv.reader(io.StringIO(completed.stdout)):
+        if len(row) < 2 or row[0].casefold() != "powerpnt.exe":
+            continue
+        try:
+            pids.add(int(row[1]))
+        except ValueError:
+            continue
+    return pids
+
+
 def _launch_powerpoint() -> tuple[Any, int | None, str]:
     pythoncom.CoInitialize()
-    # EnsureDispatch gives reliable early-bound constants on this host.
-    app = win32com.client.gencache.EnsureDispatch("PowerPoint.Application")
-    pid = None
-    try:
-        # HWND is available on recent Office builds; ProcessId may not be.
-        hwnd = int(app.HWND)
-        import ctypes
-
-        get_pid = ctypes.windll.user32.GetWindowThreadProcessId
-        proc_id = ctypes.c_ulong()
-        get_pid(hwnd, ctypes.byref(proc_id))
-        pid = int(proc_id.value) or None
-    except Exception:
+    last_error: Exception | None = None
+    for launch_attempt in range(3):
+        before = _powerpoint_pids()
+        app = None
         pid = None
-    # Recent PowerPoint builds reject Visible=False for some automation hosts.
-    try:
-        app.Visible = True
-    except Exception:
-        pass
-    try:
-        app.DisplayAlerts = pp_constants.ppAlertsNone
-    except Exception:
         try:
-            app.DisplayAlerts = 1  # ppAlertsNone
-        except Exception:
-            pass
-    try:
-        app.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
-    except Exception:
-        pass
-    version = str(getattr(app, "Version", "unknown"))
-    if pid is not None:
-        _OWNED_APPS[pid] = app
-        _OWNED_PIDS.add(pid)
-    return app, pid, version
+            # DispatchEx is required: attaching to a user's existing PowerPoint
+            # process would make cleanup and timeout ownership unsafe.
+            app = win32com.client.DispatchEx("PowerPoint.Application")
+            # Recent PowerPoint builds reject Visible=False for some hosts.
+            try:
+                app.Visible = True
+            except Exception:
+                pass
+            try:
+                app.DisplayAlerts = pp_constants.ppAlertsNone
+            except Exception:
+                try:
+                    app.DisplayAlerts = 1  # ppAlertsNone
+                except Exception:
+                    pass
+            try:
+                app.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
+            except Exception:
+                pass
+            try:
+                app.AskToUpdateLinks = False
+            except Exception:
+                pass
+            # PowerPoint does not expose an HWND property. DispatchEx starts an
+            # isolated local server, so identify only the single PID created
+            # after our snapshot.
+            for _poll_attempt in range(20):
+                created = _powerpoint_pids() - before
+                if len(created) == 1:
+                    pid = created.pop()
+                    break
+                if len(created) > 1:
+                    break
+                time.sleep(0.1)
+            if pid is None:
+                raise RuntimeError(
+                    "unable to record the isolated PowerPoint instance PID"
+                )
+            version = str(getattr(app, "Version", "unknown"))
+            _OWNED_APPS[pid] = app
+            _OWNED_PIDS.add(pid)
+            return app, pid, version
+        except Exception as exc:
+            last_error = exc
+            try:
+                if app is not None:
+                    app.Quit()
+            except Exception:
+                pass
+            _release_com(app)
+            time.sleep(0.5 * (launch_attempt + 1))
+    raise RuntimeError(
+        "unable to launch a stable isolated PowerPoint instance"
+    ) from last_error
 
 
 def _open_presentation(app: Any, path: Path, *, read_only: bool = True, password: str | None = None):
@@ -390,6 +445,15 @@ def compare_files(
         report = {
             "provider": "office",
             "powerpoint_version": reference_meta["powerpoint_version"],
+            "powerpoint_versions": {
+                "reference": reference_meta["powerpoint_version"],
+                "actual": actual_meta["powerpoint_version"],
+            },
+            "powerpoint_instances": {
+                "dispatch": "DispatchEx",
+                "reference_pid": reference_meta["owned_pid"],
+                "actual_pid": actual_meta["owned_pid"],
+            },
             "windows_version": platform.platform(),
             "python_version": sys.version.split()[0],
             "source": str(source),
@@ -468,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_s=args.timeout,
             destination=args.destination.resolve() if args.destination else None,
         )
-    except (Ppt2PptxError, OSError, TimeoutError) as exc:
+    except (Ppt2PptxError, OSError, RuntimeError, TimeoutError) as exc:
         print(f"FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         traceback.print_exc()
         return 2

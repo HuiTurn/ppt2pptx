@@ -41,5 +41,8 @@ PYTHONPATH=src python scripts/compare_powerpoint_visual.py \
 The evidence directory contains `reference/`, `actual/`, `diff/`, and
 `report.json` with provider `office`, PowerPoint version, SHA-256 digests,
 hidden-slide manifests, structure counts, conversion warnings, and per-slide
-MAE/RMSE/SSIM metrics. LibreOffice `--render` remains a package-render smoke
-check only; it does not compare against the source `.ppt`.
+MAE/RMSE/SSIM metrics. Source and output exports use separate `DispatchEx`
+instances whose owned process IDs are recorded in the report; the tool never
+attaches to or terminates unrelated PowerPoint processes. LibreOffice
+`--render` remains a package-render smoke check only; it does not compare
+against the source `.ppt`.

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Isolate every bilateral PowerPoint export with `DispatchEx`, record the
+  exact owned process IDs, retry transient COM disconnects, and disable macros
+  and link-update prompts without attaching to or terminating unrelated
+  PowerPoint instances.
 - Detect legacy PowerPoint tables (regular grids of rectangle autoshape
   cells + thin border lines) and emit them as editable DrawingML
   `<a:tbl>` graphic frames instead of flattening them into scattered
