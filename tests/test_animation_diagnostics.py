@@ -13,6 +13,12 @@ from ppt2pptx import convert
 from ppt2pptx.ppt import (
     RT_ANIMATION_INFO,
     RT_ANIMATION_INFO_ATOM,
+    RT_BINARY_TAG_DATA_BLOB,
+    RT_TIME_EXT_TIME_NODE,
+    RT_TIME_NODE,
+    RT_TIME_PROPERTY_LIST,
+    RT_TIME_VARIANT,
+    RT_VISUAL_SHAPE_ATOM,
     detect_lossy_features,
 )
 
@@ -30,6 +36,29 @@ def animation_document() -> bytes:
     atom = rec(RT_ANIMATION_INFO_ATOM, bytes(28), version=0)
     animation = rec(RT_ANIMATION_INFO, atom)
     return rec(1000, rec(1006, animation))
+
+
+def timeline_document() -> bytes:
+    effect_type = rec(
+        RT_TIME_VARIANT,
+        b"\x01" + struct.pack("<i", 1),
+        version=0,
+        instance=11,
+    )
+    properties = rec(RT_TIME_PROPERTY_LIST, effect_type)
+    time_node = rec(RT_TIME_NODE, bytes(32), version=0)
+    visual_shape = rec(
+        RT_VISUAL_SHAPE_ATOM,
+        struct.pack("<IIIII", 0, 1, 42, 0xFFFFFFFF, 0xFFFFFFFF),
+        version=0,
+    )
+    effect = rec(
+        RT_TIME_EXT_TIME_NODE,
+        time_node + properties + visual_shape,
+        instance=1,
+    )
+    extension = rec(RT_BINARY_TAG_DATA_BLOB, effect, version=0)
+    return rec(1000, rec(1006, extension))
 
 
 def powerpoint_available() -> bool:
@@ -73,6 +102,25 @@ class AnimationDiagnosticTests(unittest.TestCase):
         self.assertEqual(feature.locations[0].record_type, RT_ANIMATION_INFO)
         self.assertEqual(feature.locations[0].object_kind, "animation")
 
+    def test_detects_effect_node_inside_pp10_binary_tag(self):
+        features = {item.code: item for item in detect_lossy_features(timeline_document())}
+
+        self.assertEqual(set(features), {"ANIMATION_OMITTED"})
+        feature = features["ANIMATION_OMITTED"]
+        self.assertEqual(feature.count, 1)
+        self.assertEqual(
+            feature.record_types,
+            (
+                RT_TIME_NODE,
+                RT_TIME_PROPERTY_LIST,
+                RT_TIME_VARIANT,
+                RT_TIME_EXT_TIME_NODE,
+            ),
+        )
+        self.assertEqual(len(feature.locations), 1)
+        self.assertEqual(feature.locations[0].slide_index, 1)
+        self.assertEqual(feature.locations[0].record_type, RT_TIME_EXT_TIME_NODE)
+
     def test_controlled_fixture_reports_one_shape_animation(self):
         self.assertTrue(FIXTURE.is_file(), f"missing fixture: {FIXTURE}")
         with tempfile.TemporaryDirectory() as directory:
@@ -82,10 +130,23 @@ class AnimationDiagnosticTests(unittest.TestCase):
         self.assertEqual(set(warnings), {"ANIMATION_OMITTED"})
         warning = warnings["ANIMATION_OMITTED"]
         self.assertEqual(warning["count"], 1)
-        self.assertEqual(warning["record_types"], [RT_ANIMATION_INFO_ATOM, RT_ANIMATION_INFO])
+        self.assertEqual(
+            warning["record_types"],
+            [
+                RT_ANIMATION_INFO_ATOM,
+                RT_ANIMATION_INFO,
+                RT_TIME_NODE,
+                RT_TIME_PROPERTY_LIST,
+                RT_TIME_VARIANT,
+                RT_TIME_EXT_TIME_NODE,
+            ],
+        )
         self.assertEqual(len(warning["locations"]), 1)
         self.assertEqual(warning["locations"][0]["slide_index"], 1)
-        self.assertEqual(warning["locations"][0]["record_type"], RT_ANIMATION_INFO)
+        self.assertEqual(
+            warning["locations"][0]["record_type"],
+            RT_TIME_EXT_TIME_NODE,
+        )
         self.assertEqual(warning["locations"][0]["object_kind"], "animation")
 
 
@@ -136,7 +197,10 @@ class AnimationPowerPointVisualTests(unittest.TestCase):
         warning = warnings["ANIMATION_OMITTED"]
         self.assertEqual(warning["count"], 1)
         self.assertEqual(warning["locations"][0]["slide_index"], 1)
-        self.assertEqual(warning["locations"][0]["record_type"], RT_ANIMATION_INFO)
+        self.assertEqual(
+            warning["locations"][0]["record_type"],
+            RT_TIME_EXT_TIME_NODE,
+        )
 
 
 if __name__ == "__main__":
