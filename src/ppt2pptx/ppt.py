@@ -2168,7 +2168,15 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
 
 def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | None = None) -> Presentation:
     roots = list(records(powerpoint_document))
-    document = next((r for r in roots if r.type == RT_DOCUMENT and r.version == CONTAINER_VERSION), None)
+    document = next(
+        (
+            record
+            for record in reversed(roots)
+            if record.type == RT_DOCUMENT
+            and record.version == CONTAINER_VERSION
+        ),
+        None,
+    )
     if document is None:
         raise InvalidPpt("PowerPoint Document record is missing")
     mapping = persist_directory(powerpoint_document)
@@ -2334,7 +2342,15 @@ def _iter_all_records(data: bytes):
 def _slide_byte_ranges(data: bytes) -> tuple[tuple[int, int, int], ...]:
     """Return (1-based slide index, start offset, end offset) for each normal slide."""
     roots = list(records(data))
-    document = next((root for root in roots if root.type == RT_DOCUMENT and root.version == CONTAINER_VERSION), None)
+    document = next(
+        (
+            record
+            for record in reversed(roots)
+            if record.type == RT_DOCUMENT
+            and record.version == CONTAINER_VERSION
+        ),
+        None,
+    )
     if document is None:
         return ()
     mapping = persist_directory(data)

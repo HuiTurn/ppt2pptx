@@ -64,6 +64,9 @@ Apache POI `test-data/slideshow/37625.ppt` additionally exercises incremental
 save history: 189 stored `ExternalOleObjectAtom` records collapse to the 10
 objects referenced by current slide persist ranges (8 charts and 2 other OLE
 objects), matching PowerPoint's source structure census.
+The same file contains 14 saved `DocumentContainer` revisions; the latest one
+must produce all 29 current slides rather than the 28 listed by the first
+historical revision.
 The controlled `tests/fixtures/visual_animation_object.ppt` fixture contains
 one legacy animated textbox with no audio. Its static source/output rendering
 must remain identical while the report contains exactly one slide-bound
