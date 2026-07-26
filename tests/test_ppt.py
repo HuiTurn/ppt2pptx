@@ -7,6 +7,7 @@ from ppt2pptx.ppt import (
     _parse_text_ruler_details,
     _minimum_unwrapped_width, _minimum_wrapped_height, _parse_slide, _pictures,
     _shape_adjustments,
+    _slide_byte_ranges,
     _skip_paragraph_properties, _style_text,
     _legacy_arc_path, _text, _uses_custom_geometry, extract_presentation,
     extract_slides, records,
@@ -140,6 +141,25 @@ class PptParserTests(unittest.TestCase):
         slide = rec(1006, text)
         document = rec(1000, slide)
         self.assertEqual(extract_slides(document), [["Hello\rWorld"]])
+
+    def test_uses_latest_document_container_after_incremental_save(self):
+        stale = rec(
+            1000,
+            rec(1006, rec(4000, "Stale".encode("utf-16le"), 0)),
+        )
+        current = rec(
+            1000,
+            rec(1006, rec(4000, "Current 1".encode("utf-16le"), 0))
+            + rec(1006, rec(4000, "Current 2".encode("utf-16le"), 0)),
+        )
+
+        self.assertEqual(
+            extract_slides(stale + current),
+            [["Current 1"], ["Current 2"]],
+        )
+        ranges = _slide_byte_ranges(stale + current)
+        self.assertEqual([item[0] for item in ranges], [1, 2])
+        self.assertTrue(all(item[1] > len(stale) for item in ranges))
 
     def test_resolves_slide_through_persist_directory(self):
         text = rec(4000, "Persisted".encode("utf-16le"), 0)

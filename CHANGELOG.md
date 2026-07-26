@@ -17,6 +17,9 @@
 - Collapse incremental-save OLE/chart revisions by external object ID, retain
   only references in current slide persist ranges, and classify the latest
   object atom so stale saved revisions cannot inflate warning counts.
+- Select the latest top-level `DocumentContainer` in incrementally saved record
+  streams, restoring current slide lists instead of converting an older saved
+  revision with missing slides.
 - Collapse each legacy `AnimationInfo` container and child atom into one
   slide-bound `ANIMATION_OMITTED` diagnostic, so one animated shape is counted
   once rather than once per binary record.
