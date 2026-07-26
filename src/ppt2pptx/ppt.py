@@ -2239,8 +2239,6 @@ def extract_slides(powerpoint_document: bytes) -> list[list[str]]:
     return [[box.text for box in slide.text_boxes] for slide in extract_presentation(powerpoint_document).slides]
 
 _LOSSY_RECORD_CODES: dict[int, tuple[str, str]] = {
-    RT_ANIMATION_INFO: ("ANIMATION_OMITTED", "animation information was omitted"),
-    RT_ANIMATION_INFO_ATOM: ("ANIMATION_OMITTED", "animation information was omitted"),
     RT_TIME_NODE: ("ANIMATION_OMITTED", "animation timeline was omitted"),
     RT_TIME_EXT_TIME_NODE: ("ANIMATION_OMITTED", "animation timeline was omitted"),
     RT_ROUNDTRIP_ANIMATION_ATOM: ("ANIMATION_OMITTED", "animation timeline was omitted"),
@@ -2377,6 +2375,74 @@ def _object_kind_for_code(code: str) -> str:
         "DIAGRAM_OR_SMARTART_OMITTED": "diagram",
         "COMPLEX_FREEFORM_OMITTED": "freeform",
     }.get(code, "object")
+
+
+def _animation_object_diagnostics(
+    data: bytes, ranges: tuple[tuple[int, int, int], ...]
+) -> tuple[
+    tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]], ...
+]:
+    """Collapse each legacy AnimationInfo container and its atom into one object."""
+    all_records = list(_iter_all_records(data))
+    containers = [
+        record for record in all_records if record.type == RT_ANIMATION_INFO
+    ]
+    handled_atoms: set[int] = set()
+    diagnostics: list[
+        tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
+    ] = []
+    for container in containers:
+        start = container.offset + 8
+        end = start + len(container.payload)
+        atoms = [
+            record
+            for record in all_records
+            if record.type == RT_ANIMATION_INFO_ATOM
+            and start <= record.offset < end
+        ]
+        handled_atoms.update(record.offset for record in atoms)
+        record_types = tuple(
+            sorted({container.type, *(record.type for record in atoms)})
+        )
+        diagnostics.append(
+            (
+                "ANIMATION_OMITTED",
+                "shape animation timing and effect were omitted",
+                record_types,
+                container.offset,
+                (
+                    LossyFeatureLocation(
+                        slide_index=_slide_index_for_offset(container.offset, ranges),
+                        record_type=container.type,
+                        record_offset=container.offset,
+                        object_kind="animation",
+                    ),
+                ),
+            )
+        )
+    for atom in all_records:
+        if (
+            atom.type != RT_ANIMATION_INFO_ATOM
+            or atom.offset in handled_atoms
+        ):
+            continue
+        diagnostics.append(
+            (
+                "ANIMATION_OMITTED",
+                "orphaned shape animation information was omitted",
+                (atom.type,),
+                atom.offset,
+                (
+                    LossyFeatureLocation(
+                        slide_index=_slide_index_for_offset(atom.offset, ranges),
+                        record_type=atom.type,
+                        record_offset=atom.offset,
+                        object_kind="animation",
+                    ),
+                ),
+            )
+        )
+    return tuple(diagnostics)
 
 
 def _ole_object_diagnostics(
@@ -2552,6 +2618,9 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
     """Return object-backed loss diagnostics for unsupported/approximated content."""
     ranges = _slide_byte_ranges(powerpoint_document)
     buckets: dict[str, dict[str, object]] = {}
+    animation_diagnostics = _animation_object_diagnostics(
+        powerpoint_document, ranges
+    )
     ole_diagnostics, handled_chart_markers = _ole_object_diagnostics(
         powerpoint_document, ranges
     )
@@ -2616,6 +2685,16 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
                     record_type=record.type,
                     record_offset=record.offset,
                 )
+
+    for code, message, record_types, record_offset, locations in animation_diagnostics:
+        add(
+            code,
+            message,
+            record_offset=record_offset,
+            amount=1,
+            locations=locations,
+            record_types=record_types,
+        )
 
     for code, message, record_types, record_offset, locations in ole_diagnostics:
         add(

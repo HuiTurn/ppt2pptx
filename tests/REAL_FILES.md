@@ -60,3 +60,7 @@ record.
 The controlled `tests/fixtures/visual_chart.ppt` fixture verifies the same
 object linkage for a legacy `MSGraph.Chart.8` chart and rejects duplicate
 `EMBEDDED_OLE_OMITTED` reporting when `CHART_OMITTED` is the precise category.
+The controlled `tests/fixtures/visual_animation_object.ppt` fixture contains
+one legacy animated textbox with no audio. Its static source/output rendering
+must remain identical while the report contains exactly one slide-bound
+`ANIMATION_OMITTED` object for the `AnimationInfo` container and child atom.

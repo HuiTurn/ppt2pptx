@@ -14,6 +14,9 @@
 - Classify legacy MS Graph/Excel chart ProgIDs within their OLE container so
   one chart produces one slide-bound `CHART_OMITTED` diagnostic rather than a
   document-level chart warning plus a duplicate generic OLE warning.
+- Collapse each legacy `AnimationInfo` container and child atom into one
+  slide-bound `ANIMATION_OMITTED` diagnostic, so one animated shape is counted
+  once rather than once per binary record.
 - Isolate every bilateral PowerPoint export with `DispatchEx`, record the
   exact owned process IDs, retry transient COM disconnects, and disable macros
   and link-update prompts without attaching to or terminating unrelated
