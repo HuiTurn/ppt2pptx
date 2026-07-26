@@ -230,6 +230,8 @@ class BasicShape:
     line_head: tuple[str, str | None, str | None] | None = None
     line_tail: tuple[str, str | None, str | None] | None = None
     adjustments: tuple[int, ...] = ()
+    line_pattern: str | None = None
+    line_back_color: str | None = None
 
 @dataclass(frozen=True, slots=True)
 class Comment:
@@ -1731,7 +1733,13 @@ def _office_color(value: int | None, scheme: tuple[str, ...] = ()) -> str | None
     red, green, blue = value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF
     return f"{red:02X}{green:02X}{blue:02X}"
 
-def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], scheme: tuple[str, ...], exclude: set[int] | None = None) -> list[BasicShape]:
+def _basic_shapes(
+    slide: Record,
+    image_map: dict[int, tuple[bytes, str, str]],
+    scheme: tuple[str, ...],
+    exclude: set[int] | None = None,
+    line_patterns: dict[int, str] | None = None,
+) -> list[BasicShape]:
     result: list[BasicShape] = []
     for shape, space in _iter_sp_containers(slide):
         if exclude is not None and shape.offset in exclude:
@@ -1762,6 +1770,16 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
         if properties.get(260, 0) in image_map:
             continue
         fill, line, dash, fill_pattern, fill_back = _shape_style(properties, scheme)
+        line_pattern = (
+            (line_patterns or {}).get(properties.get(453, 0))
+            if properties.get(452) == 1
+            else None
+        )
+        line_back = (
+            _office_color(properties.get(450), scheme)
+            if line_pattern is not None
+            else None
+        )
         if fill is None and 385 not in properties and _has_fill(properties):
             # Non-text preset shapes inherit OfficeArt's white fill default.
             # Text boxes use different inheritance and must remain transparent
@@ -1822,6 +1840,8 @@ def _basic_shapes(slide: Record, image_map: dict[int, tuple[bytes, str, str]], s
             line_head=_line_end(properties, 464, 466, 467),
             line_tail=_line_end(properties, 465, 468, 469),
             adjustments=_shape_adjustments(sp.instance, properties),
+            line_pattern=line_pattern,
+            line_back_color=line_back,
         ))
     return result
 
@@ -2079,6 +2099,70 @@ def _pictures(document: Record, stream: bytes | None) -> dict[int, tuple[bytes, 
                 result[index] = (bytes(512) + raw, "pct", "image/x-pict")
     return result
 
+
+_LINE_PATTERN_DIBS = {
+    bytes.fromhex("ee55bb55ee55bb55"): "pct30",
+}
+
+
+def _line_pattern_preset(blip: Record) -> str | None:
+    if blip.type != 0xF01F:
+        return None
+    uid_count = 1 if blip.instance == 0x7A8 else 2 if blip.instance == 0x7A9 else 0
+    dib_start = uid_count * 16 + 1
+    if not uid_count or dib_start + 40 > len(blip.payload):
+        return None
+    dib = blip.payload[dib_start:]
+    header_size, width, height, planes, bit_count = struct.unpack_from(
+        "<IiiHH", dib
+    )
+    if (
+        header_size < 40
+        or width != 8
+        or abs(height) != 8
+        or planes != 1
+        or bit_count != 1
+        or header_size > len(dib)
+    ):
+        return None
+    compression = struct.unpack_from("<I", dib, 16)[0]
+    colors_used = struct.unpack_from("<I", dib, 32)[0] or 2
+    pixel_start = header_size + colors_used * 4
+    stride = 4
+    pixel_end = pixel_start + stride * 8
+    if compression != 0 or pixel_end > len(dib):
+        return None
+    rows = bytes(dib[pixel_start + row * stride] for row in range(8))
+    return _LINE_PATTERN_DIBS.get(rows) or _LINE_PATTERN_DIBS.get(rows[::-1])
+
+
+def _line_patterns(document: Record, stream: bytes | None) -> dict[int, str]:
+    if not stream:
+        return {}
+    result: dict[int, str] = {}
+    for index, bse in enumerate(
+        (
+            item
+            for item in descendants(document)
+            if item.type == RT_OFFICEART_BSE
+        ),
+        1,
+    ):
+        if len(bse.payload) < 32:
+            continue
+        offset = struct.unpack_from("<I", bse.payload, 28)[0]
+        if offset >= len(stream):
+            continue
+        try:
+            blip = next(records(stream, offset))
+        except (InvalidPpt, StopIteration):
+            continue
+        pattern = _line_pattern_preset(blip)
+        if pattern is not None:
+            result[index] = pattern
+    return result
+
+
 def _shape_pictures(
     slide: Record,
     image_map: dict[int, tuple[bytes, str, str]],
@@ -2208,7 +2292,7 @@ def _inherits_master_objects(slide_record: Record) -> bool:
     slide_flags = struct.unpack_from("<H", atom.payload, 20)[0]
     return bool(slide_flags & 0x0001)
 
-def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int) -> Slide:
+def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int, line_patterns: dict[int, str] | None = None) -> Slide:
     tables, table_excluded = _detect_tables(
         slide_record, external_text, fonts, masters, hyperlinks, scheme
     )
@@ -2271,7 +2355,12 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
             master_boxes.append(box)
         for picture in _shape_pictures(master_record, image_map, scheme):
             master_pictures.append(picture)
-        for shape in _basic_shapes(master_record, image_map, scheme):
+        for shape in _basic_shapes(
+            master_record,
+            image_map,
+            scheme,
+            line_patterns=line_patterns,
+        ):
             left, top = max(0, shape.left), max(0, shape.top)
             right = min(slide_width, shape.left + shape.width)
             bottom = min(slide_height, shape.top + shape.height)
@@ -2291,8 +2380,15 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                                          shape.path_height, shape.line_width,
                                          shape.fill_pattern, shape.fill_back_color,
                                          shape.line_head, shape.line_tail,
-                                         shape.adjustments))
-    for shape in _basic_shapes(slide_record, image_map, scheme, exclude=table_excluded):
+                                         shape.adjustments, shape.line_pattern,
+                                         shape.line_back_color))
+    for shape in _basic_shapes(
+        slide_record,
+        image_map,
+        scheme,
+        exclude=table_excluded,
+        line_patterns=line_patterns,
+    ):
         left, top = max(0, shape.left), max(0, shape.top)
         right = min(slide_width, shape.left + shape.width)
         bottom = min(slide_height, shape.top + shape.height)
@@ -2312,7 +2408,8 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                                      shape.path_height, shape.line_width,
                                      shape.fill_pattern, shape.fill_back_color,
                                      shape.line_head, shape.line_tail,
-                                     shape.adjustments))
+                                     shape.adjustments, shape.line_pattern,
+                                     shape.line_back_color))
     boxes = master_boxes + slide_boxes
     pictures = master_pictures + list(
         _shape_pictures(slide_record, image_map, scheme)
@@ -2353,6 +2450,7 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
         raise InvalidPpt("PowerPoint Document record is missing")
     mapping = persist_directory(powerpoint_document)
     image_map = _pictures(document, pictures_stream)
+    line_patterns = _line_patterns(document, pictures_stream)
     fonts = _fonts(document)
     master_records = tuple(root for root in roots if root.type == RT_MAIN_MASTER)
     master_records_by_id: dict[int, Record] = {}
@@ -2437,7 +2535,7 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
             _slide_master_id(slide_record),
             fallback_master,
         )
-        slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_record, notes, width, height))
+        slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_record, notes, width, height, line_patterns))
     if not slides:
         for slide_record in descendants(document):
             if slide_record.type == RT_SLIDE:
@@ -2445,7 +2543,7 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
                     _slide_master_id(slide_record),
                     fallback_master,
                 )
-                slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_record, (), width, height))
+                slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_record, (), width, height, line_patterns))
     excluded_offsets: set[int] = set()
     for slide in slides:
         excluded_offsets |= slide.excluded_offsets
