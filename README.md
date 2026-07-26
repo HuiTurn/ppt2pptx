@@ -61,11 +61,15 @@ format and are deliberately rejected with a clear error.
 
 Unsupported or approximated advanced objects are reported with object-backed
 warning codes such as `ANIMATION_OMITTED`, `AUDIO_OMITTED`, `VIDEO_OMITTED`,
-`EMBEDDED_OLE_OMITTED`, `CHART_OMITTED`, `DIAGRAM_OR_SMARTART_OMITTED`, and
-`COMPLEX_FREEFORM_OMITTED`. Each warning includes `count`, `record_types`, and
-`locations` (`slide_index`, `record_offset`, `object_kind`) when a matching
-object is found. Files without those objects do not receive a blanket
-advanced-feature warning.
+`EMBEDDED_OLE_OMITTED`, `LINKED_OLE_OMITTED`,
+`ACTIVEX_CONTROL_OMITTED`, `CHART_OMITTED`,
+`DIAGRAM_OR_SMARTART_OMITTED`, and `COMPLEX_FREEFORM_OMITTED`. Each warning
+includes `count`, `record_types`, and `locations` (`slide_index`,
+`record_offset`, `object_kind`) when a matching object is found.
+OLE diagnostics count
+external objects rather than their container/storage records and use
+`ExObjRefAtom` to identify the slide that owns each object. Files without those
+objects do not receive a blanket advanced-feature warning.
 
 ## Development
 

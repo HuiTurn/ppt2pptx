@@ -8,6 +8,9 @@
 - Bind sparse speaker notes by `NotesAtom.slideId`, and emit schema-valid Notes
   Masters with `notesStyle`, complete group transforms, and a dedicated theme
   part so PowerPoint reopens presentations containing notes.
+- Collapse OLE container, object, and storage records into one diagnostic per
+  external object; bind it to the owning slide through `ExObjRefAtom`, and
+  distinguish embedded, linked, and ActiveX/OLE-control loss.
 - Isolate every bilateral PowerPoint export with `DispatchEx`, record the
   exact owned process IDs, retry transient COM disconnects, and disable macros
   and link-update prompts without attaching to or terminating unrelated

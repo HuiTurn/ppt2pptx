@@ -11,6 +11,8 @@ the Apache POI project's public PowerPoint test data, including:
 - `Single_Coloured_Page_With_Fonts_and_Alignments.ppt`
 - `WithComments.ppt` and `WithLinks.ppt`
 - `pictures.ppt`, table, text-shape, background, sound, and header/footer samples
+- `ole2-embedding-2003.ppt`, `ppt_with_embeded.ppt`, and
+  `testPPT_oleWorkbook.ppt`
 - password-protected and PowerPoint 95 compatibility probes
 
 An additional historical PowerPoint 7.0 presentation comes from the public
@@ -51,3 +53,7 @@ against the source `.ppt`.
 shapes, text-bearing shapes, pictures, tables, charts, groups, OLE objects,
 media, comments, and non-empty speaker-note bodies on both sides. Its
 `differences` list identifies the slide and object category for every mismatch.
+The controlled `tests/fixtures/visual_ole.ppt` fixture additionally verifies
+that an OLE-to-preview-picture structural difference has one slide-bound
+`EMBEDDED_OLE_OMITTED` diagnostic rather than one warning count per storage
+record.
