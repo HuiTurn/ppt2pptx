@@ -37,7 +37,7 @@ class LossyFeatureTests(unittest.TestCase):
             + rec(RT_EXTERNAL_OLE_EMBED, b"\x00" * 8)
         )
         features = {item.code: item for item in detect_lossy_features(document)}
-        self.assertEqual(features["ANIMATION_OMITTED"].count, 2)
+        self.assertEqual(features["ANIMATION_OMITTED"].count, 1)
         self.assertIn(RT_ANIMATION_INFO, features["ANIMATION_OMITTED"].record_types)
         self.assertEqual(features["AUDIO_OMITTED"].count, 1)
         self.assertEqual(features["EMBEDDED_OLE_OMITTED"].count, 1)

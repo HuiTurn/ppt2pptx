@@ -71,7 +71,9 @@ external objects rather than their container/storage records and use
 `ExObjRefAtom` to identify the slide that owns each object. Legacy MS Graph and
 Excel chart ProgIDs inside an OLE container are classified as one slide-bound
 `CHART_OMITTED` object instead of also producing a generic OLE warning. Files
-without those objects do not receive a blanket advanced-feature warning.
+with those objects do not receive a blanket advanced-feature warning. A legacy
+`AnimationInfo` container and its child atom likewise count as one slide-bound
+animation object, not two record-level losses.
 
 ## Development
 
