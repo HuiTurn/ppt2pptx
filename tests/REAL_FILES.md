@@ -102,3 +102,9 @@ horizontal anchors remain zero in the parsed model and DrawingML transform
 instead of becoming slightly diagonal one-unit boxes. The source has no
 slide-local shapes; the output's 54 editable shapes are the intentionally
 flattened master grid and produce no conversion warning.
+The controlled `tests/fixtures/visual_master_objects_disabled.ppt` fixture has
+one large red master rectangle and one blue slide-local rectangle, with
+`SlideAtom.fMasterObjects` cleared through PowerPoint's
+`DisplayMasterShapes=False` property. The output must retain exactly the one
+slide-local editable shape, emit no warning, and match the PowerPoint source
+render pixel-for-pixel.

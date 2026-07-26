@@ -17,6 +17,8 @@ faithful.
   for slides, including append-only incremental saves with older document
   containers still present in the record stream.
 - Preserves hidden-slide state so excluded slides remain hidden during slide shows.
+- Respects each slide's `fMasterObjects` setting when flattening master
+  decorations, including PowerPoint's "Hide Background Graphics" behavior.
 - Restores positioned editable text, fonts, sizes, colors, bold/italic/underline,
   paragraph alignment, bullets, rotation, flips, and safe external hyperlinks.
 - Preserves PNG, JPEG, GIF, TIFF, EMF, WMF, and PICT media, including cropping,

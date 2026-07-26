@@ -13,6 +13,7 @@ from .errors import InvalidPpt
 
 RT_DOCUMENT = 1000
 RT_SLIDE = 1006
+RT_SLIDE_ATOM = 1007
 RT_SLIDE_LIST_WITH_TEXT = 4080
 RT_SLIDE_PERSIST_ATOM = 1011
 RT_SLIDE_SHOW_SLIDE_INFO_ATOM = 0x03F9
@@ -2102,6 +2103,20 @@ def _header_footer(record: Record, base: HeaderFooter | None = None, *, instance
         show_slide_number=bool(mask & 0x08),
     )
 
+def _inherits_master_objects(slide_record: Record) -> bool:
+    atom = next(
+        (
+            child
+            for child in descendants(slide_record)
+            if child.type == RT_SLIDE_ATOM and len(child.payload) >= 22
+        ),
+        None,
+    )
+    if atom is None:
+        return True
+    slide_flags = struct.unpack_from("<H", atom.payload, 20)[0]
+    return bool(slide_flags & 0x0001)
+
 def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int) -> Slide:
     tables, table_excluded = _detect_tables(
         slide_record, external_text, fonts, masters, hyperlinks, scheme
@@ -2156,7 +2171,7 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
     master_boxes: list[TextBox] = []
     master_pictures: list[Picture] = []
     shapes: list[BasicShape] = []
-    if master_record is not None:
+    if master_record is not None and _inherits_master_objects(slide_record):
         for box in _shape_text_boxes(master_record, [], fonts, masters, hyperlinks, scheme,
                                      skip_placeholders=True):
             if box.text.strip() in ("", "*"):
