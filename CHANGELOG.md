@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Honor `SlideAtom.fMasterObjects` when flattening legacy master decorations,
+  so slides with "Hide Background Graphics" no longer gain unwanted master
+  lines, logos, pictures, or text.
 - Preserve zero-width and zero-height OfficeArt line anchors through group
   transforms and DrawingML emission, avoiding the one-unit diagonal drift that
   made dense master grids thicker and misaligned.
