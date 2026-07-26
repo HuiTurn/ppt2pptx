@@ -68,8 +68,10 @@ includes `count`, `record_types`, and `locations` (`slide_index`,
 `record_offset`, `object_kind`) when a matching object is found.
 OLE diagnostics count
 external objects rather than their container/storage records and use
-`ExObjRefAtom` to identify the slide that owns each object. Files without those
-objects do not receive a blanket advanced-feature warning.
+`ExObjRefAtom` to identify the slide that owns each object. Legacy MS Graph and
+Excel chart ProgIDs inside an OLE container are classified as one slide-bound
+`CHART_OMITTED` object instead of also producing a generic OLE warning. Files
+without those objects do not receive a blanket advanced-feature warning.
 
 ## Development
 
