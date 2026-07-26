@@ -249,6 +249,9 @@ class HeaderFooter:
     header_text: str | None = None
     footer_text: str | None = None
     show_slide_number: bool = False
+    date_placeholder: TextBox | None = None
+    footer_placeholder: TextBox | None = None
+    slide_number_placeholder: TextBox | None = None
 
 @dataclass(frozen=True, slots=True)
 class TableCell:
@@ -1476,6 +1479,36 @@ def _shape_text_boxes(slide: Record, external_text: list[TextContent], fonts: tu
         ))
     return result
 
+def _master_header_footer_placeholders(
+    master: Record | None,
+    fonts: tuple[str, ...],
+    masters: dict[int, tuple[_MasterStyle, ...]],
+    hyperlinks: dict[int, str],
+    scheme: tuple[str, ...],
+) -> dict[int, TextBox]:
+    """Return PT_MasterDate/Footer/SlideNumber templates keyed by placementId."""
+    if master is None:
+        return {}
+    boxes = _shape_text_boxes(master, [], fonts, masters, hyperlinks, scheme)
+    result: dict[int, TextBox] = {}
+    for shape, space in _iter_sp_containers(master):
+        placement_id = _placeholder_placement_id(shape)
+        if placement_id not in (7, 8, 9):
+            continue
+        geometry = _anchor(_direct_children(shape), 0, space)
+        template = next(
+            (
+                box
+                for box in boxes
+                if box.is_placeholder
+                and (box.left, box.top, box.width, box.height) == geometry
+            ),
+            None,
+        )
+        if template is not None:
+            result[placement_id] = template
+    return result
+
 def _fopt_properties(record: Record) -> dict[int, int]:
     count = min(record.instance, len(record.payload) // 6)
     properties: dict[int, int] = {}
@@ -2221,6 +2254,18 @@ def _presentation_size(document: Record) -> tuple[int, int]:
         return DEFAULT_SLIDE_WIDTH, DEFAULT_SLIDE_HEIGHT
     return width, height
 
+def _omit_title_place(document: Record) -> bool:
+    atom = next(
+        (
+            child
+            for child in descendants(document)
+            if child.type == RT_DOCUMENT_ATOM
+            and len(child.payload) >= 38
+        ),
+        None,
+    )
+    return bool(atom and atom.payload[37])
+
 def _external_slide_text(document: Record, fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], scheme: tuple[str, ...]) -> dict[int, list[TextContent]]:
     """Map slide persist references to text held in SlideListWithText.
 
@@ -2276,6 +2321,33 @@ def _header_footer(record: Record, base: HeaderFooter | None = None, *, instance
         header_text=header_text,
         footer_text=footer_text,
         show_slide_number=bool(mask & 0x08),
+        date_placeholder=inherited.date_placeholder,
+        footer_placeholder=inherited.footer_placeholder,
+        slide_number_placeholder=inherited.slide_number_placeholder,
+    )
+
+def _with_master_header_footer_placeholders(
+    value: HeaderFooter | None,
+    master: Record | None,
+    fonts: tuple[str, ...],
+    masters: dict[int, tuple[_MasterStyle, ...]],
+    hyperlinks: dict[int, str],
+    scheme: tuple[str, ...],
+) -> HeaderFooter | None:
+    if value is None:
+        return None
+    placeholders = _master_header_footer_placeholders(
+        master, fonts, masters, hyperlinks, scheme
+    )
+    return HeaderFooter(
+        date_text=value.date_text,
+        date_is_auto=value.date_is_auto,
+        header_text=value.header_text,
+        footer_text=value.footer_text,
+        show_slide_number=value.show_slide_number,
+        date_placeholder=placeholders.get(7),
+        slide_number_placeholder=placeholders.get(8),
+        footer_placeholder=placeholders.get(9),
     )
 
 def _inherits_master_objects(slide_record: Record) -> bool:
@@ -2292,7 +2364,7 @@ def _inherits_master_objects(slide_record: Record) -> bool:
     slide_flags = struct.unpack_from("<H", atom.payload, 20)[0]
     return bool(slide_flags & 0x0001)
 
-def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int, line_patterns: dict[int, str] | None = None) -> Slide:
+def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, str]], external_text: list[TextContent], fonts: tuple[str, ...], masters: dict[int, tuple[_MasterStyle, ...]], hyperlinks: dict[int, str], header_footer: HeaderFooter | None, scheme: tuple[str, ...], master_record: Record | None, notes: tuple[str, ...], slide_width: int, slide_height: int, line_patterns: dict[int, str] | None = None, omit_title_place: bool = False) -> Slide:
     tables, table_excluded = _detect_tables(
         slide_record, external_text, fonts, masters, hyperlinks, scheme
     )
@@ -2347,7 +2419,8 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
     master_boxes: list[TextBox] = []
     master_pictures: list[Picture] = []
     shapes: list[BasicShape] = []
-    if master_record is not None and _inherits_master_objects(slide_record):
+    inherits_master_objects = _inherits_master_objects(slide_record)
+    if master_record is not None and inherits_master_objects:
         for box in _shape_text_boxes(master_record, [], fonts, masters, hyperlinks, scheme,
                                      skip_placeholders=True):
             if box.text.strip() in ("", "*"):
@@ -2418,13 +2491,32 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
                             if child.type == RT_SLIDE_SHOW_SLIDE_INFO_ATOM
                             and len(child.payload) >= 12), None)
     hidden = bool(struct.unpack_from("<H", slide_show_info.payload, 10)[0] & 0x0004) if slide_show_info else False
+    show_header_footer = (
+        inherits_master_objects
+        and not (
+            omit_title_place
+            and master_record is not None
+            and master_record.type == RT_SLIDE
+        )
+    )
+    resolved_header_footer = (
+        _with_master_header_footer_placeholders(
+            _header_footer(slide_record, header_footer, instance=0),
+            master_record,
+            fonts,
+            masters,
+            hyperlinks,
+            scheme,
+        )
+        if show_header_footer else None
+    )
     return Slide(
         text_boxes=tuple(boxes),
         pictures=tuple(pictures),
         shapes=tuple(shapes),
         background_color=background,
         comments=tuple(_comments(slide_record)),
-        header_footer=_header_footer(slide_record, header_footer, instance=0),
+        header_footer=resolved_header_footer,
         background_color_end=background_end,
         notes=notes,
         hidden=hidden,
@@ -2509,6 +2601,7 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
         else:
             unbound_note_values.append(values)
     width, height = _presentation_size(document)
+    omit_title_place = _omit_title_place(document)
     slides: list[Slide] = []
     seen_offsets: set[int] = set()
     unbound_note_index = 0
@@ -2535,7 +2628,7 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
             _slide_master_id(slide_record),
             fallback_master,
         )
-        slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_record, notes, width, height, line_patterns))
+        slides.append(_parse_slide(slide_record, image_map, external_text.get(reference, []), fonts, masters, hyperlinks, header_footer, scheme, master_record, notes, width, height, line_patterns, omit_title_place))
     if not slides:
         for slide_record in descendants(document):
             if slide_record.type == RT_SLIDE:
@@ -2543,7 +2636,7 @@ def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | No
                     _slide_master_id(slide_record),
                     fallback_master,
                 )
-                slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_record, (), width, height, line_patterns))
+                slides.append(_parse_slide(slide_record, image_map, [], fonts, masters, hyperlinks, header_footer, scheme, master_record, (), width, height, line_patterns, omit_title_place))
     excluded_offsets: set[int] = set()
     for slide in slides:
         excluded_offsets |= slide.excluded_offsets

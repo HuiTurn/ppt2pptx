@@ -216,13 +216,115 @@ def _path_xml(shape: BasicShape) -> str:
     )
 
 def _field_shape(shape_id: int, name: str, left: int, top: int, width: int, height: int,
-                 value: str, alignment: str, field_type: str | None = None) -> str:
+                 value: str, alignment: str, field_type: str | None = None,
+                 template: TextBox | None = None) -> str:
+    style = (
+        template.runs[0]
+        if template is not None and template.runs
+        else TextRun(value, font_size=10)
+    )
+    attributes = ['lang="en-US"']
+    if style.bold is not None:
+        attributes.append(f'b="{1 if style.bold else 0}"')
+    if style.italic is not None:
+        attributes.append(f'i="{1 if style.italic else 0}"')
+    if style.underline is not None:
+        attributes.append(f'u="{"sng" if style.underline else "none"}"')
+    if style.font_size:
+        attributes.append(f'sz="{style.font_size * 100}"')
+    if style.baseline is not None:
+        attributes.append(f'baseline="{style.baseline * 1000}"')
+    color = (
+        f'<a:solidFill><a:srgbClr val="{style.color}"/></a:solidFill>'
+        if style.color else ""
+    )
+    typeface = (
+        f'<a:latin typeface="{_xml(style.typeface)}"/>'
+        f'<a:ea typeface="{_xml(style.typeface)}"/>'
+        if style.typeface else ""
+    )
+    run_properties = f'<a:rPr {" ".join(attributes)}>{color}{typeface}</a:rPr>'
     if field_type:
         field_id = f"{{00000000-0000-0000-0000-{shape_id:012d}}}"
-        run = f'<a:fld id="{field_id}" type="{field_type}"><a:rPr lang="en-US" sz="1000"/><a:t>{_xml(value)}</a:t></a:fld>'
+        run = (
+            f'<a:fld id="{field_id}" type="{field_type}">'
+            f'{run_properties}<a:t>{_xml(value)}</a:t></a:fld>'
+        )
     else:
-        run = f'<a:r><a:rPr lang="en-US" sz="1000"/><a:t xml:space="preserve">{_xml(value)}</a:t></a:r>'
-    return f'<p:sp><p:nvSpPr><p:cNvPr id="{shape_id}" name="{name}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{_emu(left)}" y="{_emu(top)}"/><a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/><a:p><a:pPr algn="{alignment}"><a:buNone/></a:pPr>{run}</a:p></p:txBody></p:sp>'
+        run = (
+            f'<a:r>{run_properties}<a:t xml:space="preserve">'
+            f'{_xml(value)}</a:t></a:r>'
+        )
+    if template is None:
+        shape_properties = (
+            f'<a:xfrm><a:off x="{_emu(left)}" y="{_emu(top)}"/>'
+            f'<a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>'
+        )
+        body_properties = '<a:bodyPr wrap="square"/>'
+    else:
+        left, top, width, height = _xfrm_box(
+            template.left,
+            template.top,
+            template.width,
+            template.height,
+            template.rotation,
+        )
+        fill = _fill_xml(
+            template.fill_color,
+            template.fill_pattern,
+            template.fill_back_color,
+        )
+        line = _line_xml(
+            template.line_color,
+            template.line_dash,
+            template.line_width,
+            template.line_head,
+            template.line_tail,
+        )
+        shape_properties = (
+            f'<a:xfrm{_xfrm_attributes(template.rotation, template.flip_horizontal, template.flip_vertical)}>'
+            f'<a:off x="{_emu(left)}" y="{_emu(top)}"/>'
+            f'<a:ext cx="{_emu(width)}" cy="{_emu(height)}"/></a:xfrm>'
+            f'<a:prstGeom prst="{template.preset}"><a:avLst/></a:prstGeom>'
+            f'{fill}{line}'
+        )
+        wrap = "square" if template.wrap_text else "none"
+        anchor = (
+            f' anchor="{template.vertical_anchor}"'
+            if template.vertical_anchor else ""
+        )
+        insets = "".join(
+            f' {attribute}="{value}"'
+            for attribute, value in (
+                ("lIns", template.inset_left),
+                ("tIns", template.inset_top),
+                ("rIns", template.inset_right),
+                ("bIns", template.inset_bottom),
+            )
+            if value is not None
+        )
+        autofit = (
+            '<a:spAutoFit/>' if template.fit_shape_to_text
+            else '<a:normAutofit/>' if template.auto_fit
+            else ""
+        )
+        body_properties = (
+            f'<a:bodyPr wrap="{wrap}"{anchor}{insets}>{autofit}</a:bodyPr>'
+        )
+        alignment = (
+            template.paragraph_alignments[0]
+            if template.paragraph_alignments
+            and template.paragraph_alignments[0]
+            else alignment
+        )
+    return (
+        f'<p:sp><p:nvSpPr><p:cNvPr id="{shape_id}" name="{name}"/>'
+        '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+        f'<p:spPr>{shape_properties}</p:spPr><p:txBody>{body_properties}'
+        f'<a:lstStyle/><a:p><a:pPr algn="{alignment}"><a:buNone/>'
+        f'</a:pPr>{run}</a:p></p:txBody></p:sp>'
+    )
 
 def _header_footer_shapes(value: HeaderFooter | None, slide_width: int, slide_height: int,
                           slide_number: int, first_id: int) -> list[str]:
@@ -235,13 +337,16 @@ def _header_footer_shapes(value: HeaderFooter | None, slide_width: int, slide_he
     if value.date_is_auto or value.date_text:
         result.append(_field_shape(first_id + len(result), "Date", 288, slide_height - 336, 1440, 240,
                                    value.date_text or datetime.now().strftime("%m/%d/%Y"), "l",
-                                   "datetime1" if value.date_is_auto else None))
+                                   "datetime1" if value.date_is_auto else None,
+                                   value.date_placeholder))
     if value.footer_text:
         result.append(_field_shape(first_id + len(result), "Footer", 1728, slide_height - 336,
-                                   max(576, slide_width - 3456), 240, value.footer_text, "ctr"))
+                                   max(576, slide_width - 3456), 240, value.footer_text, "ctr",
+                                   template=value.footer_placeholder))
     if value.show_slide_number:
         result.append(_field_shape(first_id + len(result), "Slide Number", slide_width - 864,
-                                   slide_height - 336, 576, 240, str(slide_number), "r", "slidenum"))
+                                   slide_height - 336, 576, 240, str(slide_number), "r", "slidenum",
+                                   value.slide_number_placeholder))
     return result
 
 # Built-in Office table style (Medium Style 2 - Accent 1). Referencing a
