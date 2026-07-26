@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import io
 import math
 import struct
+import zipfile
 import zlib
 
 from .errors import InvalidPpt
@@ -28,6 +30,7 @@ RT_OFFICEART_CLIENT_DATA = 0xF011
 RT_OFFICEART_CLIENT_TEXTBOX = 0xF00D
 RT_OFFICEART_BSE = 0xF007
 RT_OFFICEART_FOPT = 0xF00B
+RT_OFFICEART_TERTIARY_FOPT = 0xF122
 RT_OE_PLACEHOLDER_ATOM = 3011
 RT_ROUNDTRIP_OPAQUE_MIN = 1053
 RT_ROUNDTRIP_OPAQUE_MAX = 1064
@@ -2993,6 +2996,92 @@ def _unparsed_freeform_locations(
             )
     return tuple(locations)
 
+
+def _metro_blob_contains_diagram(record: Record) -> bool:
+    metro_blob = _fopt_complex_properties(record).get(0x03A9)
+    if not metro_blob:
+        return False
+    try:
+        with zipfile.ZipFile(io.BytesIO(metro_blob)) as package:
+            return any(
+                "/diagrams/" in f"/{name.casefold().lstrip('/')}"
+                for name in package.namelist()
+            )
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile):
+        return False
+
+
+def _smartart_object_diagnostics(
+    data: bytes, ranges: tuple[tuple[int, int, int], ...]
+) -> tuple[
+    tuple[
+        tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]],
+        ...,
+    ],
+    frozenset[int],
+    frozenset[int],
+]:
+    """Report one object for each shape carrying a diagram metroBlob."""
+    all_records = list(_iter_all_records(data))
+    diagnostics: list[
+        tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
+    ] = []
+    handled_markers: set[int] = set()
+    smartart_shapes: set[int] = set()
+    marker_records = [
+        record
+        for record in all_records
+        if record.type in (
+            RT_CSTRING,
+            RT_PROG_BINARY_TAG,
+            RT_BINARY_TAG_DATA_BLOB,
+        )
+    ]
+    for shape in (
+        record for record in all_records if record.type == RT_OFFICEART_SP_CONTAINER
+    ):
+        start = shape.offset + 8
+        end = start + len(shape.payload)
+        option = next(
+            (
+                record
+                for record in records(data, start, end)
+                if record.type == RT_OFFICEART_TERTIARY_FOPT
+                and _metro_blob_contains_diagram(record)
+            ),
+            None,
+        )
+        if option is None:
+            continue
+        smartart_shapes.add(shape.offset)
+        handled_markers.update(
+            record.offset
+            for record in marker_records
+            if start <= record.offset < end
+        )
+        diagnostics.append(
+            (
+                "DIAGRAM_OR_SMARTART_OMITTED",
+                "SmartArt editability was omitted; preview media may be preserved",
+                (shape.type, option.type),
+                option.offset,
+                (
+                    LossyFeatureLocation(
+                        slide_index=_slide_index_for_offset(shape.offset, ranges),
+                        record_type=option.type,
+                        record_offset=option.offset,
+                        object_kind="smartart",
+                    ),
+                ),
+            )
+        )
+    return (
+        tuple(diagnostics),
+        frozenset(handled_markers),
+        frozenset(smartart_shapes),
+    )
+
+
 def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] | None = None) -> tuple[LossyFeature, ...]:
     """Return object-backed loss diagnostics for unsupported/approximated content."""
     ranges = _slide_byte_ranges(powerpoint_document)
@@ -3003,6 +3092,11 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
     ole_diagnostics, handled_chart_markers = _ole_object_diagnostics(
         powerpoint_document, ranges
     )
+    (
+        smartart_diagnostics,
+        handled_smartart_markers,
+        smartart_shape_offsets,
+    ) = _smartart_object_diagnostics(powerpoint_document, ranges)
 
     def add(
         code: str,
@@ -3057,7 +3151,10 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
                     record_type=record.type,
                     record_offset=record.offset,
                 )
-            if _payload_has_marker(record.payload, _DIAGRAM_MARKERS):
+            if (
+                record.offset not in handled_smartart_markers
+                and _payload_has_marker(record.payload, _DIAGRAM_MARKERS)
+            ):
                 add(
                     "DIAGRAM_OR_SMARTART_OMITTED",
                     "diagram/SmartArt content was omitted or left as non-editable media",
@@ -3085,7 +3182,22 @@ def detect_lossy_features(powerpoint_document: bytes, exclude_offsets: set[int] 
             record_types=record_types,
         )
 
-    freeform_locations = _unparsed_freeform_locations(powerpoint_document, ranges, exclude_offsets)
+    for code, message, record_types, record_offset, locations in smartart_diagnostics:
+        add(
+            code,
+            message,
+            record_offset=record_offset,
+            amount=1,
+            locations=locations,
+            record_types=record_types,
+        )
+
+    freeform_excludes = set(exclude_offsets or ()) | set(smartart_shape_offsets)
+    freeform_locations = _unparsed_freeform_locations(
+        powerpoint_document,
+        ranges,
+        freeform_excludes,
+    )
     if freeform_locations:
         add(
             "COMPLEX_FREEFORM_OMITTED",

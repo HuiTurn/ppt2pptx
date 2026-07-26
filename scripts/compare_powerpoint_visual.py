@@ -239,6 +239,7 @@ _OFFICE_STRUCTURE_FIELDS = (
     "picture_count",
     "table_count",
     "chart_count",
+    "smartart_count",
     "group_count",
     "ole_count",
     "media_count",
@@ -286,6 +287,11 @@ def _office_slide_structure(slide: Any, index: int) -> dict[str, int]:
         try:
             if _com_bool(shape.HasChart):
                 counts["chart_count"] += 1
+        except Exception:
+            pass
+        try:
+            if _com_bool(shape.HasSmartArt):
+                counts["smartart_count"] += 1
         except Exception:
             pass
     try:

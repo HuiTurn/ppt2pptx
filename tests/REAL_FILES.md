@@ -71,3 +71,8 @@ The controlled `tests/fixtures/visual_chart_animation.ppt` fixture verifies
 that a by-series MS Graph build contributes its `ChartBuildContainer` records
 to the three real animation effects while the chart itself still produces one
 independent, slide-bound `CHART_OMITTED` editability diagnostic.
+The controlled `tests/fixtures/visual_smartart.ppt` fixture verifies that a
+PowerPoint-saved SmartArt `metroBlob` produces exactly one slide-bound
+`DIAGRAM_OR_SMARTART_OMITTED` warning. The Office census must show one source
+SmartArt object becoming one output picture, and the bilateral metrics keep
+that preview conversion within the recorded visual bounds.

@@ -26,6 +26,9 @@
 - Bind `ChartBuildContainer` and `ChartBuildAtom` settings to the matching
   chart animation effects by shape/build ID, while retaining the separate
   chart-editability diagnostic for the same legacy MS Graph object.
+- Detect PowerPoint-saved SmartArt through the shape's `metroBlob` DrawingML
+  package, report one slide-bound object instead of silently preserving only
+  its preview, and include SmartArt in the PowerPoint structure census.
 - Isolate every bilateral PowerPoint export with `DispatchEx`, record the
   exact owned process IDs, retry transient COM disconnects, and disable macros
   and link-update prompts without attaching to or terminating unrelated
