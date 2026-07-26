@@ -54,7 +54,10 @@ RT_DIAGRAM_BUILD_ATOM = 0x2B07
 RT_ROUNDTRIP_ANIMATION_ATOM = 0x2B0B
 RT_ROUNDTRIP_ANIMATION_HASH_ATOM = 0x2B0D
 RT_TIME_NODE = 0xF127
+RT_TIME_PROPERTY_LIST = 0xF13D
+RT_TIME_VARIANT = 0xF142
 RT_TIME_EXT_TIME_NODE = 0xF144
+RT_VISUAL_SHAPE_ATOM = 0x2AFB
 RT_CSTRING = 0x0FBA
 CONTAINER_VERSION = 0xF
 DEFAULT_SLIDE_WIDTH = 5760
@@ -2239,8 +2242,6 @@ def extract_slides(powerpoint_document: bytes) -> list[list[str]]:
     return [[box.text for box in slide.text_boxes] for slide in extract_presentation(powerpoint_document).slides]
 
 _LOSSY_RECORD_CODES: dict[int, tuple[str, str]] = {
-    RT_TIME_NODE: ("ANIMATION_OMITTED", "animation timeline was omitted"),
-    RT_TIME_EXT_TIME_NODE: ("ANIMATION_OMITTED", "animation timeline was omitted"),
     RT_ROUNDTRIP_ANIMATION_ATOM: ("ANIMATION_OMITTED", "animation timeline was omitted"),
     RT_ROUNDTRIP_ANIMATION_HASH_ATOM: ("ANIMATION_OMITTED", "animation timeline was omitted"),
     RT_CHART_BUILD: ("ANIMATION_OMITTED", "chart build animation was omitted"),
@@ -2382,37 +2383,187 @@ def _animation_object_diagnostics(
 ) -> tuple[
     tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]], ...
 ]:
-    """Collapse each legacy AnimationInfo container and its atom into one object."""
+    """Report one object per legacy or PP10 shape-animation effect."""
     all_records = list(_iter_all_records(data))
-    containers = [
-        record for record in all_records if record.type == RT_ANIMATION_INFO
+
+    def direct_children(record: Record) -> list[Record]:
+        start = record.offset + 8
+        return list(records(data, start, start + len(record.payload)))
+
+    def tree(record: Record):
+        yield record
+        if record.version != CONTAINER_VERSION:
+            return
+        for child in direct_children(record):
+            yield from tree(child)
+
+    shape_containers = [
+        record for record in all_records if record.type == RT_OFFICEART_SP_CONTAINER
     ]
+    legacy: list[tuple[Record, tuple[Record, ...], int | None, int | None]] = []
     handled_atoms: set[int] = set()
-    diagnostics: list[
-        tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
-    ] = []
-    for container in containers:
+    for container in (
+        record for record in all_records if record.type == RT_ANIMATION_INFO
+    ):
         start = container.offset + 8
         end = start + len(container.payload)
-        atoms = [
+        atoms = tuple(
             record
             for record in all_records
             if record.type == RT_ANIMATION_INFO_ATOM
             and start <= record.offset < end
-        ]
-        handled_atoms.update(record.offset for record in atoms)
-        record_types = tuple(
-            sorted({container.type, *(record.type for record in atoms)})
         )
+        handled_atoms.update(record.offset for record in atoms)
+        owner = min(
+            (
+                shape
+                for shape in shape_containers
+                if shape.offset + 8 <= container.offset
+                < shape.offset + 8 + len(shape.payload)
+            ),
+            key=lambda shape: len(shape.payload),
+            default=None,
+        )
+        shape_id = None
+        if owner is not None:
+            fsp = next(
+                (
+                    child
+                    for child in direct_children(owner)
+                    if child.type == 0xF00A and len(child.payload) >= 4
+                ),
+                None,
+            )
+            if fsp is not None:
+                shape_id = struct.unpack_from("<I", fsp.payload)[0]
+        legacy.append(
+            (
+                container,
+                atoms,
+                _slide_index_for_offset(container.offset, ranges),
+                shape_id,
+            )
+        )
+
+    diagnostics: list[
+        tuple[str, str, tuple[int, ...], int, tuple[LossyFeatureLocation, ...]]
+    ] = []
+    handled_legacy: set[int] = set()
+    seen_timing_nodes: set[int] = set()
+    for blob in (
+        record for record in all_records if record.type == RT_BINARY_TAG_DATA_BLOB
+    ):
+        blob_start = blob.offset + 8
+        try:
+            top_level = list(records(data, blob_start, blob_start + len(blob.payload)))
+        except InvalidPpt:
+            continue
+        roots = [
+            record
+            for record in top_level
+            if record.type == RT_TIME_EXT_TIME_NODE
+            and record.version == CONTAINER_VERSION
+            and record.instance == 1
+        ]
+        for root in roots:
+            for node in tree(root):
+                if (
+                    node.type != RT_TIME_EXT_TIME_NODE
+                    or node.offset in seen_timing_nodes
+                ):
+                    continue
+                seen_timing_nodes.add(node.offset)
+                children = direct_children(node)
+                time_node = next(
+                    (child for child in children if child.type == RT_TIME_NODE),
+                    None,
+                )
+                property_list = next(
+                    (
+                        child
+                        for child in children
+                        if child.type == RT_TIME_PROPERTY_LIST
+                    ),
+                    None,
+                )
+                if property_list is None:
+                    continue
+                variants = [
+                    child
+                    for child in direct_children(property_list)
+                    if child.type == RT_TIME_VARIANT
+                ]
+                # TL_TPID_EffectType (instance 11) marks an actual effect node;
+                # root, sequence, trigger, and behavior nodes are scaffolding.
+                effect_types = [
+                    struct.unpack_from("<i", variant.payload, 1)[0]
+                    for variant in variants
+                    if variant.instance == 11
+                    and len(variant.payload) >= 5
+                    and variant.payload[0] == 1
+                ]
+                if not any(1 <= value <= 6 for value in effect_types):
+                    continue
+                shape_ids = {
+                    struct.unpack_from("<I", item.payload, 8)[0]
+                    for item in tree(node)
+                    if item.type == RT_VISUAL_SHAPE_ATOM
+                    and len(item.payload) >= 12
+                }
+                slide_index = _slide_index_for_offset(node.offset, ranges)
+                shape_id = next(iter(shape_ids)) if len(shape_ids) == 1 else None
+                matched = next(
+                    (
+                        index
+                        for index, (_, _, legacy_slide, legacy_shape) in enumerate(legacy)
+                        if index not in handled_legacy
+                        and legacy_slide == slide_index
+                        and shape_id is not None
+                        and legacy_shape == shape_id
+                    ),
+                    None,
+                )
+                record_types = {
+                    node.type,
+                    property_list.type,
+                    *(variant.type for variant in variants),
+                }
+                if time_node is not None:
+                    record_types.add(time_node.type)
+                if matched is not None:
+                    handled_legacy.add(matched)
+                    legacy_container, atoms, _, _ = legacy[matched]
+                    record_types.add(legacy_container.type)
+                    record_types.update(atom.type for atom in atoms)
+                diagnostics.append(
+                    (
+                        "ANIMATION_OMITTED",
+                        "shape animation timeline and effect were omitted",
+                        tuple(sorted(record_types)),
+                        node.offset,
+                        (
+                            LossyFeatureLocation(
+                                slide_index=slide_index,
+                                record_type=node.type,
+                                record_offset=node.offset,
+                                object_kind="animation",
+                            ),
+                        ),
+                    )
+                )
+
+    for index, (container, atoms, slide_index, _shape_id) in enumerate(legacy):
+        if index in handled_legacy:
+            continue
         diagnostics.append(
             (
                 "ANIMATION_OMITTED",
                 "shape animation timing and effect were omitted",
-                record_types,
+                tuple(sorted({container.type, *(record.type for record in atoms)})),
                 container.offset,
                 (
                     LossyFeatureLocation(
-                        slide_index=_slide_index_for_offset(container.offset, ranges),
+                        slide_index=slide_index,
                         record_type=container.type,
                         record_offset=container.offset,
                         object_kind="animation",

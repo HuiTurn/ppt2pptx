@@ -73,7 +73,10 @@ Excel chart ProgIDs inside an OLE container are classified as one slide-bound
 `CHART_OMITTED` object instead of also producing a generic OLE warning. Files
 with those objects do not receive a blanket advanced-feature warning. A legacy
 `AnimationInfo` container and its child atom likewise count as one slide-bound
-animation object, not two record-level losses.
+animation object, not two record-level losses. PowerPoint 2002+ `___PPT10`
+timing trees are inspected for actual effect nodes and matched to the same
+legacy fallback by OfficeArt shape ID, avoiding both silent timeline loss and
+duplicate warnings for one effect.
 
 ## Development
 

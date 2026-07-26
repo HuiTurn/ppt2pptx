@@ -17,6 +17,9 @@
 - Collapse each legacy `AnimationInfo` container and child atom into one
   slide-bound `ANIMATION_OMITTED` diagnostic, so one animated shape is counted
   once rather than once per binary record.
+- Parse `___PPT10` binary-tag timing trees, identify actual animation effects
+  through `TimePropertyList` effect metadata, and merge each effect with its
+  matching legacy `AnimationInfo` fallback by OfficeArt shape ID.
 - Isolate every bilateral PowerPoint export with `DispatchEx`, record the
   exact owned process IDs, retry transient COM disconnects, and disable macros
   and link-update prompts without attaching to or terminating unrelated
