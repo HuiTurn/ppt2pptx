@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve OfficeArt `fillType=picture` slide backgrounds as DrawingML
+  `<a:blipFill>` background relationships, keeping the image out of the shape
+  tree so foreground objects remain editable and PowerPoint structure counts
+  stay unchanged.
 - Record PowerPoint's own source/output structure census in bilateral reports,
   including per-slide text, picture, table, chart, group, OLE, media, comment,
   and speaker-note counts with object-category mismatch locations.

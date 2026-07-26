@@ -283,6 +283,7 @@ class Slide:
     background_gradient_type: int | None = None
     tables: tuple[Table, ...] = ()
     excluded_offsets: frozenset[int] = frozenset()
+    background_image: tuple[bytes, str, str] | None = None
 
 @dataclass(frozen=True, slots=True)
 class CoreProperties:
@@ -1836,8 +1837,16 @@ def _detect_tables(
 
 
 def _background(
-    slide: Record, scheme: tuple[str, ...]
-) -> tuple[str | None, str | None, int | None, int | None]:
+    slide: Record,
+    scheme: tuple[str, ...],
+    image_map: dict[int, tuple[bytes, str, str]],
+) -> tuple[
+    str | None,
+    str | None,
+    int | None,
+    int | None,
+    tuple[bytes, str, str] | None,
+]:
     for shape in descendants(slide):
         if shape.type != RT_OFFICEART_SP_CONTAINER:
             continue
@@ -1851,15 +1860,19 @@ def _background(
         fopt = next((child for child in children if child.type == RT_OFFICEART_FOPT), None)
         if fopt:
             properties = _fopt_properties(fopt)
+            fill_type = properties.get(384, 0)
+            if fill_type == 3:
+                image = image_map.get(properties.get(390, 0))
+                if image is not None:
+                    return None, None, None, None, image
             color = _office_color(properties.get(385), scheme)
             if color:
                 back = _office_color(properties.get(387), scheme)
                 # fillType 4+ are gradients / shades in MS-ODRAW.
-                fill_type = properties.get(384, 0)
                 if fill_type >= 4 and back:
-                    return back, color, _gradient_angle(properties), fill_type
-                return color, None, None, None
-    return None, None, None, None
+                    return back, color, _gradient_angle(properties), fill_type, None
+                return color, None, None, None, None
+    return None, None, None, None, None
 
 def _comments(slide: Record) -> list[Comment]:
     result: list[Comment] = []
@@ -2080,8 +2093,14 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
             TextBox(text, 288, 288 + i * 576, 5184, 432, (TextRun(text),))
             for i, text in enumerate(texts)
         ]
-    background, background_end, background_angle, background_type = _background(
-        slide_record, scheme
+    (
+        background,
+        background_end,
+        background_angle,
+        background_type,
+        background_image,
+    ) = _background(
+        slide_record, scheme, image_map
     )
     if master_record is not None:
         (
@@ -2089,20 +2108,26 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
             master_background_end,
             master_background_angle,
             master_background_type,
-        ) = _background(master_record, scheme)
+            master_background_image,
+        ) = _background(master_record, scheme, image_map)
         # Prefer master's explicit gradient when the slide only has a flat scheme fill.
-        if master_background_end and not background_end:
+        if (
+            background_image is None
+            and master_background_end
+            and not background_end
+        ):
             background, background_end = master_background, master_background_end
             background_angle, background_type = (
                 master_background_angle,
                 master_background_type,
             )
-        elif background is None:
+        elif background_image is None and background is None:
             background, background_end = master_background, master_background_end
             background_angle, background_type = (
                 master_background_angle,
                 master_background_type,
             )
+            background_image = master_background_image
     # Flatten non-placeholder master decorations onto the slide so common
     # template chrome survives conversion to a blank OOXML layout.
     master_boxes: list[TextBox] = []
@@ -2164,6 +2189,7 @@ def _parse_slide(slide_record: Record, image_map: dict[int, tuple[bytes, str, st
         background_gradient_type=background_type,
         tables=tuple(tables),
         excluded_offsets=frozenset(table_excluded),
+        background_image=background_image,
     )
 
 def extract_presentation(powerpoint_document: bytes, pictures_stream: bytes | None = None) -> Presentation:
