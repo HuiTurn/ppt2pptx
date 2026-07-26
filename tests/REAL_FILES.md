@@ -46,3 +46,8 @@ instances whose owned process IDs are recorded in the report; the tool never
 attaches to or terminates unrelated PowerPoint processes. LibreOffice
 `--render` remains a package-render smoke check only; it does not compare
 against the source `.ppt`.
+
+`office_structure` records PowerPoint's own per-slide and total counts for
+shapes, text-bearing shapes, pictures, tables, charts, groups, OLE objects,
+media, comments, and non-empty speaker-note bodies on both sides. Its
+`differences` list identifies the slide and object category for every mismatch.

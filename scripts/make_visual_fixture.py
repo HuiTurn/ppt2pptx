@@ -64,6 +64,13 @@ def make_fixture(destination: Path) -> dict[str, object]:
         except Exception:
             # Some hosts reject early-bound color assignment; geometry alone is enough.
             pass
+        slide1.Comments.Add(
+            300,
+            72,
+            "ppt2pptx",
+            "P2P",
+            "visual fixture comment",
+        )
 
         slide2 = presentation.Slides.Add(2, PP_LAYOUT_BLANK)
         box2 = slide2.Shapes.AddTextbox(1, 72, 200, 400, 60)
@@ -72,6 +79,8 @@ def make_fixture(destination: Path) -> dict[str, object]:
         text2.Font.Name = "Arial"
         text2.Font.Size = 28
         slide2.SlideShowTransition.Hidden = False
+        notes_body = slide2.NotesPage.Shapes.Placeholders(2)
+        notes_body.TextFrame.TextRange.Text = "visual fixture speaker note"
 
         presentation.SaveAs(str(destination), PP_SAVE_AS_PRESENTATION)
         version = str(getattr(app, "Version", "unknown"))
@@ -82,6 +91,8 @@ def make_fixture(destination: Path) -> dict[str, object]:
             "slide_width_pt": float(presentation.PageSetup.SlideWidth),
             "slide_height_pt": float(presentation.PageSetup.SlideHeight),
             "hidden": [False, False],
+            "comment_count": 1,
+            "note_text_count": 1,
         }
     finally:
         try:

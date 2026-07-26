@@ -272,6 +272,49 @@ class PptParserTests(unittest.TestCase):
         self.assertEqual(len(presentation.slides), 1)
         self.assertEqual(presentation.slides[0].notes, ("Speaker note",))
 
+    def test_binds_sparse_speaker_notes_by_slide_id(self):
+        slide_ref1 = rec(1011, struct.pack("<5I", 2, 0, 0, 11, 0), 0)
+        slide_ref2 = rec(1011, struct.pack("<5I", 3, 0, 0, 22, 0), 0)
+        note_ref = rec(1011, struct.pack("<5I", 4, 0, 0, 0, 0), 0)
+        document = rec(
+            1000,
+            rec(4080, slide_ref1 + slide_ref2, instance=0)
+            + rec(4080, note_ref, instance=2),
+        )
+        directory_size = len(
+            rec(6002, struct.pack("<I3I", (3 << 20) | 2, 0, 0, 0), 0)
+        )
+        slide1_offset = len(document) + directory_size
+        slide1 = rec(1006, rec(4008, b"Slide 1", 0))
+        slide2_offset = slide1_offset + len(slide1)
+        slide2 = rec(1006, rec(4008, b"Slide 2", 0))
+        note_offset = slide2_offset + len(slide2)
+        directory = rec(
+            6002,
+            struct.pack(
+                "<I3I",
+                (3 << 20) | 2,
+                slide1_offset,
+                slide2_offset,
+                note_offset,
+            ),
+            0,
+        )
+        textbox = rec(0xF00D, rec(4008, b"Second slide note", 0))
+        anchor = rec(0xF010, struct.pack("<4h", 100, 100, 1000, 500), 0)
+        note = rec(
+            1008,
+            rec(1009, struct.pack("<I", 22), 0) + rec(0xF004, anchor + textbox),
+        )
+
+        presentation = extract_presentation(
+            document + directory + slide1 + slide2 + note
+        )
+
+        self.assertEqual(len(presentation.slides), 2)
+        self.assertEqual(presentation.slides[0].notes, ())
+        self.assertEqual(presentation.slides[1].notes, ("Second slide note",))
+
     def test_preserves_hidden_slide_flag(self):
         slide_ref = rec(1011, struct.pack("<5I", 2, 0, 0, 0, 0), 0)
         document = rec(1000, rec(4080, slide_ref, instance=0))
