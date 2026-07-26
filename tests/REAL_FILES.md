@@ -118,6 +118,13 @@ before the editable rectangle; PowerPoint then renders the source and output
 pixel-identically. On `37625.ppt`, the same stacking boundary improves 11 of
 29 slides with 18 unchanged and no regression, preventing master gridlines
 from cutting through foreground charts and diagrams.
+The controlled `tests/fixtures/visual_master_arc.ppt` fixture retains one
+visible OfficeArt shape type 19 arc in its original master group coordinate
+space while making the other group members non-rendering. It verifies native
+editable DrawingML `arc` geometry, no warning, and a bounded PowerPoint
+bilateral improvement over the previous partial custom path. On `37625.ppt`,
+the same mapping improves 27 of 29 slides with two unchanged and no
+regression.
 The controlled `tests/fixtures/visual_master_objects_disabled.ppt` fixture has
 one large red master rectangle and one blue slide-local rectangle, with
 `SlideAtom.fMasterObjects` cleared through PowerPoint's

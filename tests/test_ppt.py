@@ -66,7 +66,7 @@ class PptParserTests(unittest.TestCase):
             1200,
         )
         self.assertFalse(_uses_custom_geometry(19, {325: b"vertices"}))
-        self.assertTrue(
+        self.assertFalse(
             _uses_custom_geometry(19, {325: b"vertices", 326: b"segments"})
         )
         arc_vertices = struct.pack(
