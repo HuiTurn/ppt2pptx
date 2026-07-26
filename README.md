@@ -61,6 +61,7 @@ format and are deliberately rejected with a clear error.
 
 Unsupported or approximated advanced objects are reported with object-backed
 warning codes such as `ANIMATION_OMITTED`, `AUDIO_OMITTED`, `VIDEO_OMITTED`,
+`MEDIA_ACTION_OMITTED`,
 `EMBEDDED_OLE_OMITTED`, `LINKED_OLE_OMITTED`,
 `ACTIVEX_CONTROL_OMITTED`, `CHART_OMITTED`,
 `DIAGRAM_OR_SMARTART_OMITTED`, and `COMPLEX_FREEFORM_OMITTED`. Each warning
@@ -84,6 +85,9 @@ loss remains a separate `CHART_OMITTED` diagnostic.
 PowerPoint-saved SmartArt is detected from the owning shape's `metroBlob`
 DrawingML package and produces one slide-bound
 `DIAGRAM_OR_SMARTART_OMITTED` diagnostic when only its preview is retained.
+PowerPoint-saved media that reopens as a preview picture is detected through
+the owning shape's `InteractiveInfoAtom` `II_MediaAction` and produces one
+slide-bound `MEDIA_ACTION_OMITTED` diagnostic when playback behavior is lost.
 
 ## Development
 

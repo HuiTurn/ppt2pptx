@@ -29,6 +29,9 @@
 - Detect PowerPoint-saved SmartArt through the shape's `metroBlob` DrawingML
   package, report one slide-bound object instead of silently preserving only
   its preview, and include SmartArt in the PowerPoint structure census.
+- Detect PowerPoint-saved media preview shapes through their `II_MediaAction`,
+  report one slide-bound `MEDIA_ACTION_OMITTED` object when playback behavior
+  is lost, and count those legacy preview pictures as media in Office reports.
 - Isolate every bilateral PowerPoint export with `DispatchEx`, record the
   exact owned process IDs, retry transient COM disconnects, and disable macros
   and link-update prompts without attaching to or terminating unrelated
