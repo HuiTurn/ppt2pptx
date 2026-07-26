@@ -2440,7 +2440,7 @@ def _embedded_ole_objects(
         _draw_aspect, ole_type, ex_obj_id, subtype, persist_id = (
             struct.unpack_from("<5I", record.payload)
         )
-        if ole_type != 0 or subtype not in (4, 6):
+        if ole_type != 0 or subtype not in (3, 4, 6):
             continue
         latest[ex_obj_id] = (record.offset, persist_id, subtype)
 
@@ -2476,7 +2476,13 @@ def _embedded_ole_objects(
             or not raw.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
         ):
             continue
-        if subtype == 4 and b"MSGraph.Chart.8" in raw:
+        if (
+            subtype == 3
+            and b"Excel.Sheet.12" in raw
+            and "Package".encode("utf-16le") in raw
+        ):
+            result[ex_obj_id] = (raw, "Excel.Sheet.12", "Worksheet")
+        elif subtype == 4 and b"MSGraph.Chart.8" in raw:
             result[ex_obj_id] = (raw, "MSGraph.Chart.8", "Chart")
         elif subtype == 6 and b"Equation.DSMT4" in raw:
             result[ex_obj_id] = (raw, "Equation.DSMT4", "Equation")

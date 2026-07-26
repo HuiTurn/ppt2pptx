@@ -66,6 +66,12 @@ The controlled `tests/fixtures/visual_equation_ole.ppt` fixture performs the
 same structural and pixel-exact assertions for an `Equation.DSMT4` MathType
 storage copied from the pinned Apache POI `37625.ppt` source, without
 activating the equation.
+The controlled `tests/fixtures/visual_excel_ole.ppt` fixture performs the same
+assertions for a package-backed `Excel.Sheet.12` worksheet copied from the
+pinned Apache POI `testPPT_oleWorkbook.ppt` source. The original two-slide
+sample and the one-slide fixture both retain one editable, byte-identical OLE
+storage, remove the object-backed `EMBEDDED_OLE_OMITTED` warning, and remain
+pixel-identical without activating the workbook.
 Apache POI `test-data/slideshow/37625.ppt` additionally exercises incremental
 save history: 189 stored `ExternalOleObjectAtom` records collapse to the 10
 objects referenced by current slide persist ranges (8 charts and 2 other OLE

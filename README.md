@@ -36,10 +36,11 @@ faithful.
   hyperlinks.
 - Preserves PNG, JPEG, GIF, TIFF, EMF, WMF, and PICT media, including cropping,
   position, rotation, and flips when present.
-- Preserves bounded, validated embedded `MSGraph.Chart.8` and
-  `Equation.DSMT4` storages as editable OLE chart/equation objects with their
-  original vector previews; malformed, linked, and other unsupported OLE
-  objects remain inert and precisely diagnosed.
+- Preserves bounded, validated embedded `MSGraph.Chart.8`,
+  `Equation.DSMT4`, and package-backed `Excel.Sheet.12` storages as editable
+  OLE chart/equation/worksheet objects with their original vector previews;
+  malformed, linked, and other unsupported OLE objects remain inert and
+  precisely diagnosed.
 - Recreates common editable shapes, including zero-axis horizontal/vertical
   lines without introducing a diagonal drift and legacy `pct30` patterned line
   fills; preserves legacy arcs as native editable DrawingML presets instead of
