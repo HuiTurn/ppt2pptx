@@ -1825,10 +1825,13 @@ def _freeform_path(properties: dict[int, int], complex_props: dict[int, bytes]) 
 def _uses_custom_geometry(
     shape_type: int, complex_props: dict[int, bytes]
 ) -> bool:
-    # Preset shapes such as legacy arcs may carry pVertices for adjustment
-    # bookkeeping without pSegmentInfo.  Treating those vertices as an
-    # independent polygon turns smooth curves into jagged diamonds.
-    return shape_type == 0 or (325 in complex_props and 326 in complex_props)
+    # Legacy preset arcs carry pVertices/pSegmentInfo for adjustment
+    # bookkeeping. Re-emitting it as a custom path loses most of the arc.
+    return shape_type == 0 or (
+        shape_type != 19
+        and 325 in complex_props
+        and 326 in complex_props
+    )
 
 def _legacy_arc_path(
     complex_props: dict[int, bytes],
@@ -1966,11 +1969,7 @@ def _basic_shapes(
             fill = "FFFFFF"
         complex_props = _fopt_complex_properties(fopt)
         path = path_width = path_height = None
-        if sp.instance == 19 and 325 in complex_props and 326 not in complex_props:
-            path_info = _legacy_arc_path(complex_props)
-            if path_info is not None:
-                path, path_width, path_height = path_info
-        elif _uses_custom_geometry(sp.instance, complex_props):
+        if _uses_custom_geometry(sp.instance, complex_props):
             path_info = _freeform_path(properties, complex_props)
             if path_info is not None:
                 path, path_width, path_height = path_info

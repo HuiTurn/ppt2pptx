@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Map OfficeArt shape type 19 to DrawingML's native editable `arc` preset,
+  instead of treating its adjustment vertices as a partial custom Bézier path.
 - Preserve the master/slide shape stacking boundary when flattening legacy
   master decorations, keeping master lines and fills behind editable
   slide-level shapes instead of reordering them by geometry.
