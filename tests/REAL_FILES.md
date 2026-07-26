@@ -111,6 +111,13 @@ horizontal anchors remain zero in the parsed model and DrawingML transform
 instead of becoming slightly diagonal one-unit boxes. The source has no
 slide-local shapes; the output's 54 editable shapes are the intentionally
 flattened master grid and produce no conversion warning.
+The controlled `tests/fixtures/visual_master_shape_z_order.ppt` fixture places
+one thick master line behind one filled slide-level rectangle. It verifies that
+the parser marks the flattened line as master-owned and the slide XML emits it
+before the editable rectangle; PowerPoint then renders the source and output
+pixel-identically. On `37625.ppt`, the same stacking boundary improves 11 of
+29 slides with 18 unchanged and no regression, preventing master gridlines
+from cutting through foreground charts and diagrams.
 The controlled `tests/fixtures/visual_master_objects_disabled.ppt` fixture has
 one large red master rectangle and one blue slide-local rectangle, with
 `SlideAtom.fMasterObjects` cleared through PowerPoint's

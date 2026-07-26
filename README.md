@@ -22,6 +22,9 @@ faithful.
 - Preserves hidden-slide state so excluded slides remain hidden during slide shows.
 - Respects each slide's `fMasterObjects` setting when flattening master
   decorations, including PowerPoint's "Hide Background Graphics" behavior.
+- Keeps flattened master shapes below slide-level shapes in the DrawingML
+  stacking order, so master gridlines and decorations do not cut through
+  editable foreground diagrams.
 - Inherits vertical text anchoring from corresponding master placeholders when
   the slide placeholder does not store its own OfficeArt `anchorText`.
 - Inherits master date/footer/slide-number placeholder geometry, alignment,
