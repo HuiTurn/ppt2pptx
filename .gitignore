@@ -15,3 +15,5 @@ tests/fixtures/_*.pptx
 tests/fixtures/*.pptx
 tests/fixtures/*.wav
 logs/
+
+.DS_Store

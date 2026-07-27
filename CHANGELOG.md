@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Normalize Fences, MT Symbol, and MT Extra preview fonts so equations retain
+  their brackets, integrals, Greek symbols, and accents on systems without the
+  original MathType fonts.
 - Preserve validated embedded `Excel.Sheet.12` package storages as editable
   OOXML OLE worksheet objects with their cached vector previews.
 - Preserve validated embedded `Equation.DSMT4` MathType storages as editable
