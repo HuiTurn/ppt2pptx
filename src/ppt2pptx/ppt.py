@@ -2224,6 +2224,156 @@ def _comments(slide: Record) -> list[Comment]:
             continue
     return result
 
+def _normalize_wmf_equation_fonts(data: bytes) -> bytes:
+    """Replace legacy Equation Editor font references with portable fallbacks."""
+    if len(data) < 18:
+        return data
+    try:
+        file_type, header_words, _version, _size, object_count = (
+            struct.unpack_from("<HHHIH", data)
+        )
+    except struct.error:
+        return data
+    if file_type not in (1, 2) or header_words != 9 or not object_count:
+        return data
+    output = bytearray(data)
+    objects: list[str | None] = [None] * object_count
+    font_records: list[int | None] = [None] * object_count
+    font_record_sizes: list[int] = [0] * object_count
+    scaled_fence_fonts: set[int] = set()
+    selected_face: str | None = None
+    selected_handle: int | None = None
+    create_functions = {
+        0x00F7, 0x0142, 0x01F9, 0x02FA, 0x02FB, 0x02FC, 0x06FF
+    }
+    face_replacements = {
+        "mt symbol": ("Symbol", 2),
+        "mt extra": ("Arial", 0),
+    }
+    fence_chars = {
+        ord("a"): ord("("),
+        ord("f"): ord(")"),
+        ord("c"): ord("["),
+        ord("h"): ord("]"),
+        ord("z"): 0xF2,  # Integral in the legacy Symbol encoding.
+    }
+    extra_chars = {
+        ord("#"): ord("`"),
+        ord("$"): ord("^"),
+        ord("%"): ord("~"),
+        ord("&"): ord("."),
+    }
+
+    def replace_text(start: int, count: int, mapping: dict[int, int]) -> None:
+        end = min(start + count, len(output))
+        for position in range(start, end):
+            output[position] = mapping.get(output[position], output[position])
+
+    def replace_font(
+        payload_start: int,
+        payload_end: int,
+        face: str,
+        charset: int,
+    ) -> None:
+        face_start = payload_start + 18
+        capacity = payload_end - face_start
+        if capacity <= 0:
+            return
+        encoded = face.encode("cp1252")[:max(0, capacity - 1)]
+        output[face_start:payload_end] = (
+            encoded + bytes(capacity - len(encoded))
+        )
+        output[payload_start + 13] = charset
+
+    def normalize_fence_font(text_start: int, count: int) -> None:
+        if selected_handle is None:
+            return
+        font_start = font_records[selected_handle]
+        if font_start is None:
+            return
+        text = output[text_start:min(text_start + count, len(output))]
+        use_symbol = any(fence_chars.get(value) == 0xF2 for value in text)
+        replace_font(
+            font_start,
+            font_start + font_record_sizes[selected_handle],
+            "Symbol" if use_symbol else "Arial",
+            2 if use_symbol else 0,
+        )
+        if not use_symbol and font_start not in scaled_fence_fonts:
+            height = struct.unpack_from("<h", output, font_start)[0]
+            struct.pack_into("<h", output, font_start, int(height / 2))
+            scaled_fence_fonts.add(font_start)
+
+    position = 18
+    while position + 6 <= len(output):
+        size_words, function = struct.unpack_from("<IH", output, position)
+        record_size = size_words * 2
+        if size_words < 3 or position + record_size > len(output):
+            return data
+        payload_start = position + 6
+        payload_end = position + record_size
+        if function in create_functions:
+            try:
+                handle = objects.index(None)
+            except ValueError:
+                handle = None
+            face = None
+            if function == 0x02FB and payload_end - payload_start >= 19:
+                face_start = payload_start + 18
+                face = bytes(
+                    output[face_start:payload_end]
+                ).split(b"\x00", 1)[0].decode("cp1252", "replace").casefold()
+                replacement = face_replacements.get(face)
+                if replacement is not None:
+                    replacement_face, charset = replacement
+                    replace_font(
+                        payload_start, payload_end, replacement_face, charset
+                    )
+            if handle is not None:
+                objects[handle] = face or ""
+                font_records[handle] = (
+                    payload_start if function == 0x02FB else None
+                )
+                font_record_sizes[handle] = (
+                    payload_end - payload_start if function == 0x02FB else 0
+                )
+        elif function == 0x012D and payload_end - payload_start >= 2:
+            handle = struct.unpack_from("<H", output, payload_start)[0]
+            if handle < len(objects) and objects[handle] is not None:
+                selected_handle = handle
+                selected_face = objects[handle]
+        elif function == 0x01F0 and payload_end - payload_start >= 2:
+            handle = struct.unpack_from("<H", output, payload_start)[0]
+            if handle < len(objects):
+                objects[handle] = None
+                font_records[handle] = None
+                font_record_sizes[handle] = 0
+                if selected_handle == handle:
+                    selected_handle = None
+                    selected_face = None
+        elif function == 0x0521 and payload_end - payload_start >= 2:
+            count = struct.unpack_from("<H", output, payload_start)[0]
+            text_start = payload_start + 2
+            if selected_face == "fences":
+                normalize_fence_font(text_start, count)
+                replace_text(text_start, count, fence_chars)
+            elif selected_face == "mt extra":
+                replace_text(text_start, count, extra_chars)
+        elif function == 0x0A32 and payload_end - payload_start >= 8:
+            count, options = struct.unpack_from(
+                "<HH", output, payload_start + 4
+            )
+            text_start = payload_start + 8 + (8 if options & 0x0006 else 0)
+            if selected_face == "fences":
+                normalize_fence_font(text_start, count)
+                replace_text(text_start, count, fence_chars)
+            elif selected_face == "mt extra":
+                replace_text(text_start, count, extra_chars)
+        position += record_size
+        if function == 0:
+            break
+    return bytes(output)
+
 def _pictures(document: Record, stream: bytes | None) -> dict[int, tuple[bytes, str, str]]:
     if not stream:
         return {}
@@ -2275,6 +2425,7 @@ def _pictures(document: Record, stream: bytes | None) -> dict[int, tuple[bytes, 
                 # background as an opaque white rectangle.
                 if raw.startswith(b"\xd7\xcd\xc6\x9a") and len(raw) >= 22:
                     raw = raw[22:]
+                raw = _normalize_wmf_equation_fonts(raw)
                 result[index] = (raw, "wmf", "image/x-wmf")
             elif blip.type == 0xF01A:
                 result[index] = (raw, "emf", "image/x-emf")

@@ -6,6 +6,7 @@ from ppt2pptx.ppt import (
     _parse_text_ruler, _shape_style,
     _parse_text_ruler_details,
     _minimum_unwrapped_width, _minimum_wrapped_height, _parse_slide, _pictures,
+    _normalize_wmf_equation_fonts,
     _shape_adjustments,
     _slide_byte_ranges,
     _skip_paragraph_properties, _style_text,
@@ -224,6 +225,74 @@ class PptParserTests(unittest.TestCase):
         self.assertEqual(data, raw)
         self.assertEqual((extension, content_type), ("wmf", "image/x-wmf"))
         self.assertFalse(data.startswith(b"\xd7\xcd\xc6\x9a"))
+
+    def test_normalizes_variable_length_equation_editor_fonts(self):
+        def wmf_record(function, payload=b""):
+            if len(payload) % 2:
+                payload += b"\x00"
+            return struct.pack("<IH", 3 + len(payload) // 2, function) + payload
+
+        def font(face, charset):
+            log_font = struct.pack(
+                "<hhhhh8B",
+                -224, 0, 0, 0, 400,
+                0, 0, 0, charset, 0, 0, 0, 0,
+            )
+            return wmf_record(0x02FB, log_font + face.encode() + b"\x00")
+
+        def text(value):
+            return wmf_record(
+                0x0A32,
+                struct.pack("<hhHH", 0, 0, len(value), 0) + value,
+            )
+
+        body = b"".join((
+            font("Fences", 0),
+            wmf_record(0x012D, struct.pack("<H", 0)),
+            text(b"z"),
+            wmf_record(0x01F0, struct.pack("<H", 0)),
+            font("Fences", 0),
+            wmf_record(0x012D, struct.pack("<H", 0)),
+            text(b"ch"),
+            wmf_record(0x01F0, struct.pack("<H", 0)),
+            font("MT Symbol", 2),
+            wmf_record(0x012D, struct.pack("<H", 0)),
+            text(b"t"),
+            wmf_record(0x01F0, struct.pack("<H", 0)),
+            font("MT Extra", 2),
+            wmf_record(0x012D, struct.pack("<H", 0)),
+            text(b"$"),
+            wmf_record(0),
+        ))
+        header = struct.pack(
+            "<HHHIHIH",
+            1, 9, 0x0300, (18 + len(body)) // 2, 1, 0, 0,
+        )
+
+        normalized = _normalize_wmf_equation_fonts(header + body)
+
+        self.assertIn(b"Symbol\x00", normalized)
+        self.assertIn(b"Arial\x00", normalized)
+        self.assertIn(
+            struct.pack(
+                "<hhhhh8B",
+                -112, 0, 0, 0, 400,
+                0, 0, 0, 0, 0, 0, 0, 0,
+            ) + b"Arial\x00",
+            normalized,
+        )
+        self.assertIn(
+            struct.pack("<hhHH", 0, 0, 1, 0) + b"\xf2",
+            normalized,
+        )
+        self.assertIn(
+            struct.pack("<hhHH", 0, 0, 2, 0) + b"[]",
+            normalized,
+        )
+        self.assertIn(
+            struct.pack("<hhHH", 0, 0, 1, 0) + b"^",
+            normalized,
+        )
 
     def test_places_master_picture_behind_slide_picture(self):
         def picture_shape(reference):
