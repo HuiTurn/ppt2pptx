@@ -3,4 +3,4 @@
 from .converter import ConversionResult, convert, inspect_ppt
 
 __all__ = ["ConversionResult", "convert", "inspect_ppt"]
-__version__ = "0.3.4"
+__version__ = "0.4.0"

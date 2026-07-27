@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Normalize Fences, MT Symbol, and MT Extra preview fonts so equations retain
   their brackets, integrals, Greek symbols, and accents on systems without the
